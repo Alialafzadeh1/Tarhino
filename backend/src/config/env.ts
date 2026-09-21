@@ -80,15 +80,25 @@ export function validateAndLoadEnv(): EnvConfig {
     throw new Error(msg);
   }
 
-  // Parse allowed origins with secure production fallback
-  const rawOrigins = process.env.ALLOWED_ORIGINS || (isStrict ? '' : '*');
+  // Parse allowed origins with strict security
+  const rawOrigins = process.env.ALLOWED_ORIGINS || (nodeEnv === 'development' || nodeEnv === 'test' ? '*' : '');
   const allowedOrigins = rawOrigins
     .split(',')
     .map((o) => o.trim())
     .filter((o) => o.length > 0);
 
-  if (isStrict && (allowedOrigins.length === 0 || allowedOrigins.includes('*'))) {
-    console.warn('[SECURITY WARNING] ALLOWED_ORIGINS should be explicitly whitelisted for production domain(s).');
+  if (nodeEnv === 'production') {
+    if (allowedOrigins.length === 0 || allowedOrigins.includes('*')) {
+      const corsErr = '[CRITICAL FATAL] In production (NODE_ENV=production), ALLOWED_ORIGINS must be an explicit whitelist of domains and cannot be empty or "*". Server startup aborted.';
+      console.error(corsErr);
+      throw new Error(corsErr);
+    }
+  } else if (isStaging) {
+    if (allowedOrigins.length === 0 || allowedOrigins.includes('*')) {
+      const corsErr = '[CRITICAL FATAL] In staging (NODE_ENV=staging), ALLOWED_ORIGINS must be an explicit whitelist of staging domains. Server startup aborted.';
+      console.error(corsErr);
+      throw new Error(corsErr);
+    }
   }
 
   return {

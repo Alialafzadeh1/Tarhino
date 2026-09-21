@@ -1,6 +1,7 @@
 import { S3Client, PutObjectCommand, GetObjectCommand } from '@aws-sdk/client-s3';
 import { getSignedUrl } from '@aws-sdk/s3-request-presigner';
 import { v4 as uuidv4 } from 'uuid';
+import { prisma } from '../database/prisma';
 import { env } from '../config/env';
 
 export interface PresignedUploadRequest {
@@ -68,8 +69,8 @@ export class UploadsService {
     const expiresIn = 3600; // 1 hour
 
     if (!this.s3Client) {
-      if (env.NODE_ENV === 'production') {
-        throw new Error('STORAGE_UNAVAILABLE: Object storage is not initialized on the production server.');
+      if (env.NODE_ENV !== 'development' && env.NODE_ENV !== 'test') {
+        throw new Error('STORAGE_UNAVAILABLE: Object storage is not initialized on the server.');
       }
       // Dev mode local mock S3 URL only
       return {
@@ -101,8 +102,38 @@ export class UploadsService {
     };
   }
 
-  async generatePresignedDownloadUrl(storageKey: string, expiresIn = 3600): Promise<string> {
+  async generatePresignedDownloadUrl(storageKey: string, userId: string, expiresIn = 3600): Promise<string> {
+    // Prevent path traversal and malicious keys
+    if (!storageKey || storageKey.includes('..') || !/^[a-zA-Z0-9_\-\.\/]+$/.test(storageKey)) {
+      throw new Error('INVALID_STORAGE_KEY: نامعتبر یا دارای کاراکتر غیرمجاز');
+    }
+
+    // Access control:
+    // If the storage key is user-scoped (uploads/{uploaderId}/...), ensure the requester has access
+    // Or if in public-facing assets/avatars, allow.
+    if (storageKey.startsWith('uploads/')) {
+      const parts = storageKey.split('/');
+      const uploaderId = parts[1];
+      if (uploaderId && uploaderId !== userId) {
+        // If not the owner, check if the file was sent in a conversation that user belongs to
+        const sharedMessage = await prisma.message.findFirst({
+          where: {
+            text: { contains: storageKey },
+            conversation: {
+              members: { some: { userId } },
+            },
+          },
+        });
+        if (!sharedMessage) {
+          throw new Error('UNAUTHORIZED_OBJECT_ACCESS: عدم دسترسی به این فایل');
+        }
+      }
+    }
+
     if (!this.s3Client) {
+      if (env.NODE_ENV !== 'development' && env.NODE_ENV !== 'test') {
+        throw new Error('STORAGE_UNAVAILABLE: Object storage is not initialized on the server.');
+      }
       return `${env.STORAGE_PUBLIC_URL}/${storageKey}`;
     }
 

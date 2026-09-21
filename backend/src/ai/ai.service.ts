@@ -15,8 +15,8 @@ export class GeminiProvider implements AIProvider {
 
   async generateResponse(prompt: string, systemInstruction?: string): Promise<string> {
     if (!this.apiKey) {
-      if (env.NODE_ENV === 'production') {
-        throw new Error('AI_PROVIDER_UNAVAILABLE: GEMINI_API_KEY is not configured on production backend.');
+      if (env.NODE_ENV !== 'development' && env.NODE_ENV !== 'test') {
+        throw new Error('AI_PROVIDER_UNAVAILABLE: GEMINI_API_KEY is not configured on backend.');
       }
       return this.generateDevFallbackResponse(prompt);
     }
@@ -42,13 +42,13 @@ export class GeminiProvider implements AIProvider {
       } else {
         const errText = await res.text();
         console.error(`[GeminiProvider] API Error (${res.status}):`, errText);
-        if (env.NODE_ENV === 'production') {
+        if (env.NODE_ENV !== 'development' && env.NODE_ENV !== 'test') {
           throw new Error(`AI_PROVIDER_UNAVAILABLE: Gemini API returned status ${res.status}`);
         }
       }
     } catch (e: any) {
       console.error('[GeminiProvider] Network/call failure:', e.message);
-      if (env.NODE_ENV === 'production') {
+      if (env.NODE_ENV !== 'development' && env.NODE_ENV !== 'test') {
         throw new Error('AI_PROVIDER_UNAVAILABLE: Could not reach Gemini AI API.');
       }
     }
@@ -73,8 +73,8 @@ export class OpenAICompatibleProvider implements AIProvider {
 
   async generateResponse(prompt: string, systemInstruction?: string): Promise<string> {
     if (!this.apiKey) {
-      if (env.NODE_ENV === 'production') {
-        throw new Error('AI_PROVIDER_UNAVAILABLE: OPENAI_API_KEY is not configured on production backend.');
+      if (env.NODE_ENV !== 'development' && env.NODE_ENV !== 'test') {
+        throw new Error('AI_PROVIDER_UNAVAILABLE: OPENAI_API_KEY is not configured on backend.');
       }
       return `«من هوش مصنوعی طرحی نو هستم؛ از رسانه هنری طرحینه مدیا.»\n\n[حالت توسعه] ایده دریافت شد: «${prompt}»`;
     }
@@ -101,7 +101,7 @@ export class OpenAICompatibleProvider implements AIProvider {
       }
     } catch (err: any) {
       console.error('[OpenAICompatibleProvider] Call failure:', err.message);
-      if (env.NODE_ENV === 'production') {
+      if (env.NODE_ENV !== 'development' && env.NODE_ENV !== 'test') {
         throw new Error('AI_PROVIDER_UNAVAILABLE: OpenAI provider failed.');
       }
     }
