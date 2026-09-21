@@ -60,6 +60,7 @@ fun TarhiNooBottomNav(
         NavItem("home", if (currentLanguage == AppLanguage.PERSIAN) "خانه" else "Home", Icons.Filled.Home, Icons.Outlined.Home),
         NavItem("explore", if (currentLanguage == AppLanguage.PERSIAN) "کاوش" else "Explore", Icons.Filled.Explore, Icons.Outlined.Explore),
         NavItem("builder", if (currentLanguage == AppLanguage.PERSIAN) "خلق" else "Create", Icons.Filled.Add, Icons.Filled.Add, isPrimary = true),
+        NavItem("messenger", if (currentLanguage == AppLanguage.PERSIAN) "پیام‌ها" else "Messages", Icons.Filled.Chat, Icons.Outlined.Chat),
         NavItem("ai_chat", if (currentLanguage == AppLanguage.PERSIAN) "دستیار AI" else "AI Hub", Icons.Filled.AutoAwesome, Icons.Outlined.AutoAwesome),
         NavItem("profile", if (currentLanguage == AppLanguage.PERSIAN) "پروفایل" else "Profile", Icons.Filled.Person, Icons.Outlined.Person)
     )

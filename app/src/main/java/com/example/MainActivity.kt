@@ -32,6 +32,7 @@ import com.example.data.local.AppDatabase
 import com.example.data.local.entity.AssetEntity
 import com.example.data.local.entity.ProjectEntity
 import com.example.data.local.entity.PromptEntity
+import com.example.data.repository.MessengerRepository
 import com.example.data.repository.TarhiNooRepository
 import com.example.domain.model.AICoreState
 import com.example.domain.model.AppLanguage
@@ -51,6 +52,12 @@ import com.example.ui.screens.ProfileAndSettingsScreen
 import com.example.ui.screens.ProjectsScreen
 import com.example.ui.screens.PromptBuilderScreen
 import com.example.ui.screens.PromptOptimizerScreen
+import com.example.ui.screens.messenger.ChannelScreen
+import com.example.ui.screens.messenger.MessengerScreen
+import com.example.ui.screens.messenger.MessengerViewModel
+import com.example.ui.screens.messenger.NewConversationScreen
+import com.example.ui.screens.messenger.PrivateChatScreen
+import com.example.ui.screens.messenger.UserProfileScreen
 import com.example.ui.theme.BgDark
 import com.example.ui.theme.TarhiNooTheme
 import kotlinx.coroutines.delay
@@ -72,6 +79,13 @@ fun TarhiNooApp() {
     val repository = remember {
         val db = AppDatabase.getDatabase(context)
         TarhiNooRepository(db)
+    }
+    val messengerRepository = remember {
+        val db = AppDatabase.getDatabase(context)
+        MessengerRepository(db)
+    }
+    val messengerViewModel = remember {
+        MessengerViewModel(messengerRepository)
     }
     val geminiService = remember { GeminiService() }
     val snackbarHostState = remember { SnackbarHostState() }
@@ -97,6 +111,18 @@ fun TarhiNooApp() {
     val historyList by repository.allHistory.collectAsState(initial = emptyList())
     val notifications by repository.allNotifications.collectAsState(initial = emptyList())
     val communityPosts by repository.communityPosts.collectAsState(initial = emptyList())
+
+    // Messenger state
+    val messengerConversations by messengerViewModel.conversations.collectAsState()
+    val messengerGroups by messengerViewModel.groups.collectAsState()
+    val messengerChannels by messengerViewModel.channels.collectAsState()
+    val messengerContacts by messengerViewModel.contacts.collectAsState()
+    val messengerUsers by messengerViewModel.allUsers.collectAsState()
+    val activeMessengerConv by messengerViewModel.activeConversation.collectAsState()
+    val activeMessengerMessages by messengerViewModel.activeMessages.collectAsState()
+    val activeMessengerChannel by messengerViewModel.activeChannel.collectAsState()
+    val activeMessengerChannelPosts by messengerViewModel.activeChannelPosts.collectAsState()
+    val activeUserProfile by messengerViewModel.activeUserProfile.collectAsState()
 
     // Active conversation state
     var activeConversationId by remember { mutableLongStateOf(0L) }
@@ -412,6 +438,139 @@ fun TarhiNooApp() {
                                 currentLanguage = currentLanguage,
                                 notifications = notifications,
                                 onMarkAllAsRead = { scope.launch { repository.markNotificationsRead() } },
+                                snackbarHostState = snackbarHostState
+                            )
+
+                            "messenger" -> MessengerScreen(
+                                currentLanguage = currentLanguage,
+                                conversations = messengerConversations,
+                                groups = messengerGroups,
+                                channels = messengerChannels,
+                                contacts = messengerContacts,
+                                onOpenConversation = { id ->
+                                    val targetConv = messengerConversations.find { it.id == id }
+                                    if (targetConv?.type == "CHANNEL") {
+                                        messengerViewModel.selectChannel(id)
+                                        navigateTo("channel_detail")
+                                    } else {
+                                        messengerViewModel.selectConversation(id)
+                                        navigateTo("chat_detail")
+                                    }
+                                },
+                                onOpenChannel = { id ->
+                                    messengerViewModel.selectChannel(id)
+                                    navigateTo("channel_detail")
+                                },
+                                onOpenUserProfile = { userId ->
+                                    messengerViewModel.selectUserProfile(userId)
+                                    navigateTo("user_profile")
+                                },
+                                onNewMessageClick = { navigateTo("new_chat") },
+                                onTogglePin = { id, pinned -> messengerViewModel.togglePinConversation(id, pinned) },
+                                onToggleMute = { id, muted -> messengerViewModel.toggleMuteConversation(id, muted) },
+                                onToggleArchive = { id, arch -> messengerViewModel.toggleArchiveConversation(id, arch) },
+                                onDeleteConversation = { id -> messengerViewModel.deleteConversation(id) },
+                                onMarkAsRead = { id -> messengerViewModel.markAsRead(id) },
+                                snackbarHostState = snackbarHostState
+                            )
+
+                            "chat_detail" -> PrivateChatScreen(
+                                currentLanguage = currentLanguage,
+                                conversation = activeMessengerConv,
+                                messages = activeMessengerMessages,
+                                onBack = { navigateBack() },
+                                onSendMessage = { text, replyId, replyText, replySender ->
+                                    messengerViewModel.sendMessage(text, replyId, replyText, replySender)
+                                },
+                                onForwardMessage = { msg ->
+                                    scope.launch {
+                                        snackbarHostState.showSnackbar("پیام برای هدایت انتخاب شد")
+                                    }
+                                },
+                                onEditMessage = { id, newText -> messengerViewModel.editMessage(id, newText) },
+                                onDeleteMessage = { id -> messengerViewModel.deleteMessage(id) },
+                                onPinMessage = { id, pinned -> messengerViewModel.togglePinMessage(id, pinned) },
+                                onReaction = { id, emoji -> messengerViewModel.toggleReaction(id, emoji) },
+                                onOpenPromptBuilder = { prompt ->
+                                    builderInitialSubject = prompt
+                                    navigateTo("builder")
+                                },
+                                onOpenNavaStudio = { navigateTo("nava_studio") },
+                                onReport = { type, id -> messengerViewModel.report(type, id, "CONTENT_VIOLATION") },
+                                snackbarHostState = snackbarHostState
+                            )
+
+                            "channel_detail" -> ChannelScreen(
+                                currentLanguage = currentLanguage,
+                                channel = activeMessengerChannel,
+                                posts = activeMessengerChannelPosts,
+                                onBack = { navigateBack() },
+                                onToggleSubscribe = { sub ->
+                                    activeMessengerChannel?.let { ch ->
+                                        messengerViewModel.toggleChannelSubscription(ch.id, sub)
+                                    }
+                                },
+                                onPublishPost = { text, prompt ->
+                                    activeMessengerChannel?.let { ch ->
+                                        messengerViewModel.publishChannelPost(ch.id, text, prompt)
+                                    }
+                                },
+                                onOpenPromptBuilder = { prompt ->
+                                    builderInitialSubject = prompt
+                                    navigateTo("builder")
+                                },
+                                snackbarHostState = snackbarHostState
+                            )
+
+                            "new_chat" -> NewConversationScreen(
+                                currentLanguage = currentLanguage,
+                                users = messengerUsers,
+                                onBack = { navigateBack() },
+                                onStartPrivateChat = { user ->
+                                    messengerViewModel.startPrivateChatWithUser(user) {
+                                        navigateTo("chat_detail")
+                                    }
+                                },
+                                onCreateGroup = { name, desc, members ->
+                                    messengerViewModel.createGroup(name, desc, members) {
+                                        navigateTo("chat_detail")
+                                    }
+                                },
+                                onCreateChannel = { name, uname, desc ->
+                                    messengerViewModel.createChannel(name, uname, desc) {
+                                        navigateTo("channel_detail")
+                                    }
+                                },
+                                onStartAIChat = {
+                                    messengerViewModel.startAIChatConversation {
+                                        navigateTo("chat_detail")
+                                    }
+                                },
+                                snackbarHostState = snackbarHostState
+                            )
+
+                            "user_profile" -> UserProfileScreen(
+                                currentLanguage = currentLanguage,
+                                user = activeUserProfile,
+                                onBack = { navigateBack() },
+                                onStartChat = {
+                                    activeUserProfile?.let { u ->
+                                        messengerViewModel.startPrivateChatWithUser(u) {
+                                            navigateTo("chat_detail")
+                                        }
+                                    }
+                                },
+                                onToggleBlock = { blocked ->
+                                    activeUserProfile?.let { u ->
+                                        messengerViewModel.toggleBlockUser(u.id, blocked)
+                                    }
+                                },
+                                onReport = {
+                                    activeUserProfile?.let { u ->
+                                        messengerViewModel.report("USER", u.id, "PROFILE_REPORT")
+                                        scope.launch { snackbarHostState.showSnackbar("گزارش تخلف ثبت گردید") }
+                                    }
+                                },
                                 snackbarHostState = snackbarHostState
                             )
 
