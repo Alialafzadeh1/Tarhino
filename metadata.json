@@ -1,0 +1,6 @@
+{
+  "name": "طرحی نو",
+  "description": "Tarhi Noo — AI Creative Super App from Tarhineh Media (طرحینه مدیا). Featuring AI Chat, Prompt Architect, Nava Studio, Projects, Asset Vault, and intelligent Creative Agent.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
