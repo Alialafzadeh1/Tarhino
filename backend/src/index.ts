@@ -3,16 +3,25 @@ import express from 'express';
 import cors from 'cors';
 import helmet from 'helmet';
 import dotenv from 'dotenv';
+
+// Load local .env before validating configuration
+dotenv.config();
+
+import { env } from './config/env';
 import apiRouter from './routes';
 import { RealtimeServer, setRealtimeServer } from './realtime/websocket.server';
 
-dotenv.config();
-
 const app = express();
-const PORT = process.env.PORT || 8080;
+const PORT = env.PORT || 8080;
+const HOST = env.HOST || '0.0.0.0';
 
 app.use(helmet({ contentSecurityPolicy: false }));
-app.use(cors({ origin: process.env.ALLOWED_ORIGINS || '*' }));
+app.use(
+  cors({
+    origin: env.ALLOWED_ORIGINS.includes('*') ? '*' : env.ALLOWED_ORIGINS,
+    credentials: true,
+  })
+);
 app.use(express.json({ limit: '10mb' }));
 app.use(express.urlencoded({ extended: true }));
 
@@ -22,13 +31,14 @@ app.get('/', (_req, res) => {
     name: 'Tarhi Noo Backend & Realtime Gateway',
     status: 'ONLINE',
     version: '1.0.0',
+    environment: env.NODE_ENV,
     documentation: '/health',
   });
 });
 
 // API Routes
 app.use('/api', apiRouter);
-// Fallback for direct endpoints
+// Direct endpoint mapping
 app.use('/', apiRouter);
 
 const server = http.createServer(app);
@@ -37,8 +47,10 @@ const server = http.createServer(app);
 const realtimeServer = new RealtimeServer(server);
 setRealtimeServer(realtimeServer);
 
-server.listen(PORT, () => {
-  console.log(`[Tarhi Noo Backend] HTTP & Realtime Gateway listening on port ${PORT}`);
-});
+if (process.env.NODE_ENV !== 'test') {
+  server.listen(PORT, HOST, () => {
+    console.log(`[Tarhi Noo Backend] HTTP & Realtime Gateway listening on http://${HOST}:${PORT}`);
+  });
+}
 
-export { app, server };
+export { app, server, realtimeServer };

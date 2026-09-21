@@ -6,13 +6,26 @@ services:
     container_name: tarhinoo-backend
     restart: unless-stopped
     ports:
-      - "8080:8080"
+      - "${PORT:-8080}:8080"
+    env_file:
+      - .env
     environment:
-      - NODE_ENV=production
+      - NODE_ENV=${NODE_ENV:-production}
       - PORT=8080
-      - DATABASE_URL=postgresql://tarhinoo:tarhinoo_pass@postgres:5432/tarhinoo_db?schema=public
-      - JWT_SECRET=tarhinoo_super_secret_jwt_key_production_2026
-      - JWT_REFRESH_SECRET=tarhinoo_super_secret_refresh_jwt_key_production_2026
+      - DATABASE_URL=postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}?schema=public
+      - JWT_SECRET=${JWT_SECRET}
+      - JWT_REFRESH_SECRET=${JWT_REFRESH_SECRET}
+      - S3_ENDPOINT=${S3_ENDPOINT}
+      - S3_REGION=${S3_REGION}
+      - S3_BUCKET_NAME=${S3_BUCKET_NAME}
+      - S3_ACCESS_KEY_ID=${S3_ACCESS_KEY_ID}
+      - S3_SECRET_ACCESS_KEY=${S3_SECRET_ACCESS_KEY}
+      - STORAGE_PUBLIC_URL=${STORAGE_PUBLIC_URL}
+      - GEMINI_API_KEY=${GEMINI_API_KEY}
+      - FIREBASE_PROJECT_ID=${FIREBASE_PROJECT_ID}
+      - FIREBASE_CLIENT_EMAIL=${FIREBASE_CLIENT_EMAIL}
+      - FIREBASE_PRIVATE_KEY=${FIREBASE_PRIVATE_KEY}
+      - ALLOWED_ORIGINS=${ALLOWED_ORIGINS}
     depends_on:
       postgres:
         condition: service_healthy
@@ -22,15 +35,15 @@ services:
     container_name: tarhinoo-postgres
     restart: unless-stopped
     environment:
-      POSTGRES_USER: tarhinoo
-      POSTGRES_PASSWORD: tarhinoo_pass
-      POSTGRES_DB: tarhinoo_db
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: ${POSTGRES_DB}
     ports:
-      - "5432:5432"
+      - "${POSTGRES_PORT:-5432}:5432"
     volumes:
       - postgres_data:/var/lib/postgresql/data
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U tarhinoo -d tarhinoo_db"]
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
       interval: 5s
       timeout: 5s
       retries: 5

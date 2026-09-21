@@ -1,3 +1,5 @@
+import { env } from '../config/env';
+
 export interface AIProvider {
   name: string;
   generateResponse(prompt: string, systemInstruction?: string): Promise<string>;
@@ -8,12 +10,15 @@ export class GeminiProvider implements AIProvider {
   private apiKey: string;
 
   constructor(apiKey?: string) {
-    this.apiKey = apiKey || process.env.GEMINI_API_KEY || '';
+    this.apiKey = apiKey || env.GEMINI_API_KEY;
   }
 
   async generateResponse(prompt: string, systemInstruction?: string): Promise<string> {
     if (!this.apiKey) {
-      return this.generateFallbackResponse(prompt);
+      if (env.NODE_ENV === 'production') {
+        throw new Error('AI_PROVIDER_UNAVAILABLE: GEMINI_API_KEY is not configured on production backend.');
+      }
+      return this.generateDevFallbackResponse(prompt);
     }
 
     try {
@@ -34,16 +39,25 @@ export class GeminiProvider implements AIProvider {
         const data = (await res.json()) as any;
         const text = data?.candidates?.[0]?.content?.parts?.[0]?.text;
         if (text) return text;
+      } else {
+        const errText = await res.text();
+        console.error(`[GeminiProvider] API Error (${res.status}):`, errText);
+        if (env.NODE_ENV === 'production') {
+          throw new Error(`AI_PROVIDER_UNAVAILABLE: Gemini API returned status ${res.status}`);
+        }
       }
-    } catch (e) {
-      console.warn('Gemini API call failed, using high-fidelity fallback', e);
+    } catch (e: any) {
+      console.error('[GeminiProvider] Network/call failure:', e.message);
+      if (env.NODE_ENV === 'production') {
+        throw new Error('AI_PROVIDER_UNAVAILABLE: Could not reach Gemini AI API.');
+      }
     }
 
-    return this.generateFallbackResponse(prompt);
+    return this.generateDevFallbackResponse(prompt);
   }
 
-  private generateFallbackResponse(prompt: string): string {
-    return `«من هوش مصنوعی طرحی نو هستم؛ از رسانه هنری طرحینه مدیا.»\n\nبرای ایده «${prompt}»، پرامپت هنری اختصاصی با نورپردازی متمرکز، رندر سینمایی و جزئیات معماری آماده شد. شما می‌توانید با لمس دکمه زیر این پرامپت را به Prompt Builder یا Nava Studio منتقل کنید.`;
+  private generateDevFallbackResponse(prompt: string): string {
+    return `«من هوش مصنوعی طرحی نو هستم؛ از رسانه هنری طرحینه مدیا.»\n\n[حالت توسعه] برای ایده «${prompt}»، پرامپت هنری و ساختار بصری با نورپردازی متمرکز آماده شد.`;
   }
 }
 
@@ -53,13 +67,16 @@ export class OpenAICompatibleProvider implements AIProvider {
   private endpoint: string;
 
   constructor(apiKey?: string, endpoint?: string) {
-    this.apiKey = apiKey || process.env.OPENAI_API_KEY || '';
+    this.apiKey = apiKey || env.OPENAI_API_KEY || '';
     this.endpoint = endpoint || 'https://api.openai.com/v1/chat/completions';
   }
 
   async generateResponse(prompt: string, systemInstruction?: string): Promise<string> {
     if (!this.apiKey) {
-      return `«من هوش مصنوعی طرحی نو هستم؛ از رسانه هنری طرحینه مدیا.»\n\nدرخواست: «${prompt}»`;
+      if (env.NODE_ENV === 'production') {
+        throw new Error('AI_PROVIDER_UNAVAILABLE: OPENAI_API_KEY is not configured on production backend.');
+      }
+      return `«من هوش مصنوعی طرحی نو هستم؛ از رسانه هنری طرحینه مدیا.»\n\n[حالت توسعه] ایده دریافت شد: «${prompt}»`;
     }
 
     try {
@@ -82,11 +99,14 @@ export class OpenAICompatibleProvider implements AIProvider {
         const data = (await res.json()) as any;
         return data?.choices?.[0]?.message?.content || '';
       }
-    } catch (err) {
-      console.warn('OpenAI provider call failed', err);
+    } catch (err: any) {
+      console.error('[OpenAICompatibleProvider] Call failure:', err.message);
+      if (env.NODE_ENV === 'production') {
+        throw new Error('AI_PROVIDER_UNAVAILABLE: OpenAI provider failed.');
+      }
     }
 
-    return `«من هوش مصنوعی طرحی نو هستم؛ از رسانه هنری طرحینه مدیا.»\n\nدرخواست دریافت شد: «${prompt}»`;
+    return `«من هوش مصنوعی طرحی نو هستم؛ از رسانه هنری طرحینه مدیا.»\n\n[حالت توسعه] درخواست دریافت شد: «${prompt}»`;
   }
 }
 
@@ -97,8 +117,7 @@ Always introduce yourself respectfully with: «من هوش مصنوعی طرحی
 You provide expert creative direction, prompt engineering, cinematic visual concepts, and audio/music direction for Persian and international artists.`;
 
   constructor() {
-    const defaultProvider = process.env.AI_DEFAULT_PROVIDER || 'gemini';
-    if (defaultProvider === 'openai') {
+    if (env.AI_DEFAULT_PROVIDER === 'openai' && env.OPENAI_API_KEY) {
       this.provider = new OpenAICompatibleProvider();
     } else {
       this.provider = new GeminiProvider();
@@ -124,7 +143,7 @@ You provide expert creative direction, prompt engineering, cinematic visual conc
   }
 
   isConfigured(): boolean {
-    return !!process.env.GEMINI_API_KEY || !!process.env.OPENAI_API_KEY;
+    return !!env.GEMINI_API_KEY || !!env.OPENAI_API_KEY;
   }
 }
 

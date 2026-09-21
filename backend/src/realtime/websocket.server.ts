@@ -2,51 +2,52 @@ import { Server as HttpServer } from 'http';
 import { WebSocketServer, WebSocket } from 'ws';
 import jwt from 'jsonwebtoken';
 import { prisma } from '../database/prisma';
+import { env } from '../config/env';
 
 interface AuthenticatedSocket extends WebSocket {
   userId?: string;
   isAlive?: boolean;
   subscriptions?: Set<string>;
+  lastTypingTimestamp?: number;
 }
 
 export class RealtimeServer {
   private wss: WebSocketServer;
   private clients: Map<string, Set<AuthenticatedSocket>> = new Map();
+  private heartbeatInterval?: NodeJS.Timeout;
 
   constructor(server: HttpServer) {
-    this.wss = new WebSocketServer({ server, path: '/realtime' });
+    this.wss = new WebSocketServer({
+      server,
+      path: '/realtime',
+      maxPayload: 64 * 1024, // 64KB max payload security limit
+    });
     this.init();
   }
 
   private init() {
-    const JWT_SECRET = process.env.JWT_SECRET || 'tarhinoo_super_secret_jwt_key_production_2026';
-
     this.wss.on('connection', (ws: AuthenticatedSocket, req) => {
       ws.isAlive = true;
       ws.subscriptions = new Set<string>();
 
-      // Extract token from query or headers
-      const url = new URL(req.url || '', `http://${req.headers.host}`);
-      const token = url.searchParams.get('token') || (req.headers['authorization'] || '').replace('Bearer ', '');
+      // Strict WebSocket Security: Authenticate only via Bearer JWT (header or ?token= URL query)
+      const url = new URL(req.url || '', `http://${req.headers.host || 'localhost'}`);
+      const rawToken = url.searchParams.get('token') || (req.headers['authorization'] || '').replace(/^Bearer\s+/i, '');
 
       let authenticatedUserId: string | null = null;
-      if (token) {
+      if (rawToken) {
         try {
-          const payload = jwt.verify(token, JWT_SECRET) as { userId: string };
+          const payload = jwt.verify(rawToken, env.JWT_SECRET) as { userId: string };
           authenticatedUserId = payload.userId;
-        } catch (e) {
-          // Token invalid or expired
+        } catch {
+          // Token invalid
         }
       }
 
-      if (!authenticatedUserId) {
-        // Allow connection if header provided, or wait for AUTH message
-        const headerUserId = req.headers['x-user-id'] as string;
-        if (headerUserId) authenticatedUserId = headerUserId;
-      }
-
+      // DO NOT trust X-User-Id header alone!
       if (authenticatedUserId) {
         this.registerClient(authenticatedUserId, ws);
+        ws.send(JSON.stringify({ type: 'CONNECTED', userId: authenticatedUserId }));
       }
 
       ws.on('pong', () => {
@@ -55,10 +56,14 @@ export class RealtimeServer {
 
       ws.on('message', async (data) => {
         try {
+          if (data.toString().length > 64 * 1024) {
+            ws.send(JSON.stringify({ type: 'ERROR', code: 'PAYLOAD_TOO_LARGE', message: 'پیام بیش از حد مجاز است' }));
+            return;
+          }
           const msg = JSON.parse(data.toString());
           await this.handleClientMessage(ws, msg);
-        } catch (err) {
-          // Invalid json ignored
+        } catch {
+          ws.send(JSON.stringify({ type: 'ERROR', code: 'MALFORMED_JSON', message: 'فرمت داده نامعتبر است' }));
         }
       });
 
@@ -70,7 +75,7 @@ export class RealtimeServer {
     });
 
     // Heartbeat check every 25 seconds
-    setInterval(() => {
+    this.heartbeatInterval = setInterval(() => {
       this.wss.clients.forEach((client: AuthenticatedSocket) => {
         if (!client.isAlive) {
           return client.terminate();
@@ -88,7 +93,7 @@ export class RealtimeServer {
     }
     this.clients.get(userId)!.add(ws);
 
-    // Update presence in DB and broadcast
+    // Update presence in DB
     prisma.user.update({
       where: { id: userId },
       data: { isOnline: true, lastSeen: new Date() },
@@ -113,54 +118,153 @@ export class RealtimeServer {
   }
 
   private async handleClientMessage(ws: AuthenticatedSocket, msg: any) {
-    switch (msg.type) {
-      case 'AUTH':
-        if (msg.token) {
-          try {
-            const JWT_SECRET = process.env.JWT_SECRET || 'tarhinoo_super_secret_jwt_key_production_2026';
-            const payload = jwt.verify(msg.token, JWT_SECRET) as { userId: string };
-            this.registerClient(payload.userId, ws);
-            ws.send(JSON.stringify({ type: 'CONNECTED', userId: payload.userId }));
-          } catch {
-            ws.send(JSON.stringify({ type: 'AUTH_EXPIRED' }));
+    // 1. Explicit message validation
+    if (!msg || typeof msg !== 'object' || typeof msg.type !== 'string') {
+      ws.send(JSON.stringify({ type: 'ERROR', code: 'INVALID_EVENT', message: 'نوع رویداد نامعتبر است' }));
+      return;
+    }
+
+    const allowedEvents = [
+      'AUTH',
+      'SUBSCRIBE_CONVERSATION',
+      'UNSUBSCRIBE_CONVERSATION',
+      'SUBSCRIBE_CHANNEL',
+      'UNSUBSCRIBE_CHANNEL',
+      'TYPING',
+      'HEARTBEAT',
+    ];
+
+    if (!allowedEvents.includes(msg.type)) {
+      ws.send(JSON.stringify({ type: 'ERROR', code: 'UNKNOWN_EVENT_TYPE', message: `رویداد ${msg.type} پشتیبانی نمی‌شود` }));
+      return;
+    }
+
+    // AUTH Handshake message
+    if (msg.type === 'AUTH') {
+      if (msg.token) {
+        try {
+          const payload = jwt.verify(msg.token, env.JWT_SECRET) as { userId: string };
+          const user = await prisma.user.findUnique({ where: { id: payload.userId } });
+          if (!user) {
+            ws.send(JSON.stringify({ type: 'AUTH_EXPIRED', message: 'کاربر یافت نشد' }));
+            ws.close(4001, 'Unauthorized');
+            return;
           }
+          this.registerClient(payload.userId, ws);
+          ws.send(JSON.stringify({ type: 'CONNECTED', userId: payload.userId }));
+        } catch {
+          ws.send(JSON.stringify({ type: 'AUTH_EXPIRED', message: 'توکن نامعتبر یا منقضی شده است' }));
+          ws.close(4001, 'Unauthorized');
         }
-        break;
+      } else {
+        ws.send(JSON.stringify({ type: 'AUTH_EXPIRED', message: 'توکن ارسال نشده است' }));
+        ws.close(4001, 'Unauthorized');
+      }
+      return;
+    }
 
-      case 'SUBSCRIBE_CONVERSATION':
-        if (msg.conversationId && ws.subscriptions) {
-          ws.subscriptions.add(`conv:${msg.conversationId}`);
-        }
-        break;
+    // Require authenticated socket for all subsequent operations
+    if (!ws.userId) {
+      ws.send(JSON.stringify({ type: 'ERROR', code: 'UNAUTHENTICATED_SOCKET', message: 'ابتدا باید احراز هویت انجام شود' }));
+      ws.close(4001, 'Unauthorized');
+      return;
+    }
 
-      case 'UNSUBSCRIBE_CONVERSATION':
-        if (msg.conversationId && ws.subscriptions) {
-          ws.subscriptions.delete(`conv:${msg.conversationId}`);
-        }
-        break;
+    switch (msg.type) {
+      case 'SUBSCRIBE_CONVERSATION': {
+        const conversationId = String(msg.conversationId || '');
+        if (!conversationId) return;
 
-      case 'SUBSCRIBE_CHANNEL':
-        if (msg.channelId && ws.subscriptions) {
-          ws.subscriptions.add(`channel:${msg.channelId}`);
-        }
-        break;
+        // Security check: Verify user is an actual member of this conversation
+        const isMember = await prisma.conversationMember.findUnique({
+          where: { conversationId_userId: { conversationId, userId: ws.userId } },
+        });
 
-      case 'UNSUBSCRIBE_CHANNEL':
-        if (msg.channelId && ws.subscriptions) {
-          ws.subscriptions.delete(`channel:${msg.channelId}`);
+        if (!isMember) {
+          ws.send(JSON.stringify({
+            type: 'ERROR',
+            code: 'FORBIDDEN_SUBSCRIPTION',
+            message: 'شما عضو این گفتگو نیستید و مجاز به عضویت در رویدادهای آن نمی‌باشید',
+          }));
+          return;
         }
-        break;
 
-      case 'TYPING':
-        if (msg.conversationId && ws.userId) {
-          this.broadcastToConversation(msg.conversationId, {
-            type: 'TYPING',
-            conversationId: msg.conversationId,
-            userId: ws.userId,
-            isTyping: !!msg.isTyping,
-          }, ws.userId);
+        ws.subscriptions?.add(`conv:${conversationId}`);
+        ws.send(JSON.stringify({ type: 'SUBSCRIBED_CONVERSATION', conversationId }));
+        break;
+      }
+
+      case 'UNSUBSCRIBE_CONVERSATION': {
+        const conversationId = String(msg.conversationId || '');
+        if (conversationId && ws.subscriptions) {
+          ws.subscriptions.delete(`conv:${conversationId}`);
         }
         break;
+      }
+
+      case 'SUBSCRIBE_CHANNEL': {
+        const channelId = String(msg.channelId || '');
+        if (!channelId) return;
+
+        // Security check: Verify channel exists and check public or member
+        const channel = await prisma.channel.findUnique({
+          where: { id: channelId },
+          include: { subscribers: { where: { userId: ws.userId } } },
+        });
+
+        if (!channel) {
+          ws.send(JSON.stringify({ type: 'ERROR', code: 'CHANNEL_NOT_FOUND', message: 'کانال یافت نشد' }));
+          return;
+        }
+
+        if (!channel.isPublic && channel.subscribers.length === 0 && channel.ownerId !== ws.userId) {
+          ws.send(JSON.stringify({ type: 'ERROR', code: 'FORBIDDEN_CHANNEL', message: 'این کانال خصوصی است' }));
+          return;
+        }
+
+        ws.subscriptions?.add(`channel:${channelId}`);
+        ws.send(JSON.stringify({ type: 'SUBSCRIBED_CHANNEL', channelId }));
+        break;
+      }
+
+      case 'UNSUBSCRIBE_CHANNEL': {
+        const channelId = String(msg.channelId || '');
+        if (channelId && ws.subscriptions) {
+          ws.subscriptions.delete(`channel:${channelId}`);
+        }
+        break;
+      }
+
+      case 'TYPING': {
+        const conversationId = String(msg.conversationId || '');
+        if (!conversationId) return;
+
+        // Rate limit typing events: max 1 event per 500ms per client
+        const now = Date.now();
+        if (ws.lastTypingTimestamp && now - ws.lastTypingTimestamp < 500) {
+          return;
+        }
+        ws.lastTypingTimestamp = now;
+
+        // Verify conversation membership
+        const isMember = await prisma.conversationMember.findUnique({
+          where: { conversationId_userId: { conversationId, userId: ws.userId } },
+        });
+
+        if (isMember) {
+          this.broadcastToConversation(
+            conversationId,
+            {
+              type: 'TYPING',
+              conversationId,
+              userId: ws.userId,
+              isTyping: !!msg.isTyping,
+            },
+            ws.userId
+          );
+        }
+        break;
+      }
     }
   }
 
@@ -214,6 +318,13 @@ export class RealtimeServer {
         client.send(data);
       }
     });
+  }
+
+  public close() {
+    if (this.heartbeatInterval) {
+      clearInterval(this.heartbeatInterval);
+    }
+    this.wss.close();
   }
 
   public isHealthy(): boolean {

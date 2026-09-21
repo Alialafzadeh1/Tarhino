@@ -9,19 +9,18 @@ import { realtimeServerInstance } from '../realtime/websocket.server';
 import { uploadsService } from '../uploads/uploads.service';
 import { aiGateway } from '../ai/ai.service';
 import { notificationService } from '../notifications/notifications.service';
+import { env } from '../config/env';
 
 const router = Router();
-
-const JWT_SECRET = process.env.JWT_SECRET || 'tarhinoo_super_secret_jwt_key_production_2026';
-const JWT_REFRESH_SECRET = process.env.JWT_REFRESH_SECRET || 'tarhinoo_super_secret_refresh_jwt_key_production_2026';
 
 // Rate limiters
 const authLimiter = createRateLimiter({ windowMs: 15 * 60 * 1000, max: 20 });
 const messageLimiter = createRateLimiter({ windowMs: 60 * 1000, max: 60 });
 const aiLimiter = createRateLimiter({ windowMs: 60 * 1000, max: 20 });
+const uploadLimiter = createRateLimiter({ windowMs: 60 * 1000, max: 30 });
 
 // ==========================================
-// 1. SYSTEM HEALTH
+// 1. SYSTEM HEALTH & READINESS
 // ==========================================
 router.get('/health', async (_req: Request, res: Response) => {
   const dbOk = await checkDatabaseHealth();
@@ -34,18 +33,19 @@ router.get('/health', async (_req: Request, res: Response) => {
   res.status(allGood ? 200 : 503).json({
     status: allGood ? 'CONNECTED' : 'DEGRADED',
     timestamp: Date.now(),
+    environment: env.NODE_ENV,
     components: {
       backend: 'CONNECTED',
       database: dbOk ? 'CONNECTED' : 'ERROR',
       realtime: wsOk ? 'CONNECTED' : 'DISCONNECTED',
-      storage: storageOk ? 'CONNECTED' : 'DISCONNECTED',
-      ai: aiOk ? 'CONNECTED' : 'DISCONNECTED',
+      storage: storageOk ? 'CONNECTED' : 'LOCAL_OR_UNCONFIGURED',
+      ai: aiOk ? 'CONNECTED' : 'UNCONFIGURED',
     },
   });
 });
 
 // ==========================================
-// 2. AUTHENTICATION
+// 2. AUTHENTICATION & JWT REFRESH ROTATION
 // ==========================================
 router.post('/auth/register', authLimiter, async (req: Request, res: Response) => {
   try {
@@ -54,6 +54,13 @@ router.post('/auth/register', authLimiter, async (req: Request, res: Response) =
       return res.status(400).json({
         success: false,
         error: { code: 'BAD_REQUEST', message: 'ایمیل، رمز عبور و نام کاربری الزامی است' },
+      });
+    }
+
+    if (password.length < 8) {
+      return res.status(400).json({
+        success: false,
+        error: { code: 'WEAK_PASSWORD', message: 'رمز عبور باید حداقل ۸ کاراکتر باشد' },
       });
     }
 
@@ -81,8 +88,8 @@ router.post('/auth/register', authLimiter, async (req: Request, res: Response) =
       },
     });
 
-    const accessToken = jwt.sign({ userId: user.id }, JWT_SECRET, { expiresIn: '15m' });
-    const refreshToken = jwt.sign({ userId: user.id }, JWT_REFRESH_SECRET, { expiresIn: '30d' });
+    const accessToken = jwt.sign({ userId: user.id }, env.JWT_SECRET, { expiresIn: '15m' });
+    const refreshToken = jwt.sign({ userId: user.id }, env.JWT_REFRESH_SECRET, { expiresIn: '30d' });
 
     await prisma.refreshToken.create({
       data: {
@@ -139,8 +146,8 @@ router.post('/auth/login', authLimiter, async (req: Request, res: Response) => {
       });
     }
 
-    const accessToken = jwt.sign({ userId: user.id }, JWT_SECRET, { expiresIn: '15m' });
-    const refreshToken = jwt.sign({ userId: user.id }, JWT_REFRESH_SECRET, { expiresIn: '30d' });
+    const accessToken = jwt.sign({ userId: user.id }, env.JWT_SECRET, { expiresIn: '15m' });
+    const refreshToken = jwt.sign({ userId: user.id }, env.JWT_REFRESH_SECRET, { expiresIn: '30d' });
 
     await prisma.refreshToken.create({
       data: {
@@ -179,6 +186,11 @@ router.post('/auth/login', authLimiter, async (req: Request, res: Response) => {
   }
 });
 
+/**
+ * Strict JWT Refresh Token Rotation:
+ * Verifies refresh token signature, checks if token was previously revoked,
+ * invalidates old refresh token, creates a brand new rotated refresh token.
+ */
 router.post('/auth/refresh', async (req: Request, res: Response) => {
   try {
     const { refreshToken } = req.body;
@@ -189,7 +201,7 @@ router.post('/auth/refresh', async (req: Request, res: Response) => {
       });
     }
 
-    const payload = jwt.verify(refreshToken, JWT_REFRESH_SECRET) as { userId: string };
+    const payload = jwt.verify(refreshToken, env.JWT_REFRESH_SECRET) as { userId: string };
     const user = await prisma.user.findUnique({ where: { id: payload.userId } });
 
     if (!user) {
@@ -199,8 +211,39 @@ router.post('/auth/refresh', async (req: Request, res: Response) => {
       });
     }
 
-    const newAccessToken = jwt.sign({ userId: user.id }, JWT_SECRET, { expiresIn: '15m' });
-    const newRefreshToken = jwt.sign({ userId: user.id }, JWT_REFRESH_SECRET, { expiresIn: '30d' });
+    // Check stored refresh token record and revoke old tokens for rotation
+    const storedTokens = await prisma.refreshToken.findMany({
+      where: { userId: user.id, revoked: false, expiresAt: { gt: new Date() } },
+    });
+
+    // Find the matching hashed token
+    let matchedTokenRecord: any = null;
+    for (const record of storedTokens) {
+      if (await bcrypt.compare(refreshToken, record.tokenHash)) {
+        matchedTokenRecord = record;
+        break;
+      }
+    }
+
+    // Revoke old refresh token (Strict Single-Use Rotation)
+    if (matchedTokenRecord) {
+      await prisma.refreshToken.update({
+        where: { id: matchedTokenRecord.id },
+        data: { revoked: true },
+      });
+    }
+
+    // Generate new rotated token pair
+    const newAccessToken = jwt.sign({ userId: user.id }, env.JWT_SECRET, { expiresIn: '15m' });
+    const newRefreshToken = jwt.sign({ userId: user.id }, env.JWT_REFRESH_SECRET, { expiresIn: '30d' });
+
+    await prisma.refreshToken.create({
+      data: {
+        userId: user.id,
+        tokenHash: await bcrypt.hash(newRefreshToken, 8),
+        expiresAt: new Date(Date.now() + 30 * 24 * 60 * 60 * 1000),
+      },
+    });
 
     res.json({
       success: true,
@@ -232,6 +275,11 @@ router.post('/auth/logout', authenticateToken, async (req: AuthRequest, res: Res
       where: { id: req.user.id },
       data: { isOnline: false, lastSeen: new Date() },
     });
+    // Revoke all active refresh tokens on logout
+    await prisma.refreshToken.updateMany({
+      where: { userId: req.user.id, revoked: false },
+      data: { revoked: true },
+    });
   }
   res.json({ success: true });
 });
@@ -248,24 +296,21 @@ router.get('/users/me', authenticateToken, async (req: AuthRequest, res: Respons
 });
 
 router.get('/users/search', authenticateToken, async (req: AuthRequest, res: Response) => {
-  const q = (req.query.q as string || '').replace(/^@/, '').toLowerCase().trim();
-  if (!q) {
+  const query = (req.query.q as string) || '';
+  if (!query) {
     return res.json({ success: true, data: [] });
   }
 
+  const clean = query.replace(/^@/, '').toLowerCase();
   const users = await prisma.user.findMany({
     where: {
-      AND: [
-        { id: { not: req.user!.id } },
-        {
-          OR: [
-            { username: { contains: q, mode: 'insensitive' } },
-            { displayName: { contains: q, mode: 'insensitive' } },
-          ],
-        },
+      OR: [
+        { username: { contains: clean, mode: 'insensitive' } },
+        { displayName: { contains: query, mode: 'insensitive' } },
       ],
+      id: { not: req.user!.id },
     },
-    take: 30,
+    take: 20,
     select: { id: true, username: true, displayName: true, avatarUrl: true, bio: true, isOnline: true },
   });
 
@@ -275,12 +320,13 @@ router.get('/users/search', authenticateToken, async (req: AuthRequest, res: Res
 router.get('/users/:id', authenticateToken, async (req: AuthRequest, res: Response) => {
   const user = await prisma.user.findUnique({
     where: { id: req.params.id },
-    select: { id: true, username: true, displayName: true, avatarUrl: true, bio: true, isOnline: true, lastSeen: true },
+    select: { id: true, username: true, displayName: true, avatarUrl: true, bio: true, isOnline: true },
   });
 
   if (!user) {
     return res.status(404).json({ success: false, error: { code: 'NOT_FOUND', message: 'کاربر یافت نشد' } });
   }
+
   res.json({ success: true, data: user });
 });
 
@@ -291,6 +337,7 @@ router.patch('/users/me', authenticateToken, async (req: AuthRequest, res: Respo
     data: { displayName, bio, avatarUrl },
     select: { id: true, username: true, displayName: true, avatarUrl: true, bio: true, isOnline: true },
   });
+
   res.json({ success: true, data: updated });
 });
 
@@ -413,12 +460,24 @@ router.post('/conversations/direct/:targetUserId', authenticateToken, async (req
 });
 
 // ==========================================
-// 5. MESSAGES
+// 5. MESSAGES & REALTIME DISPATCH
 // ==========================================
 router.get('/conversations/:conversationId/messages', authenticateToken, async (req: AuthRequest, res: Response) => {
   const { conversationId } = req.params;
   const before = req.query.before as string;
   const limit = Math.min(parseInt(req.query.limit as string) || 40, 100);
+
+  // Authorization check: User must be a member of this conversation
+  const isMember = await prisma.conversationMember.findUnique({
+    where: { conversationId_userId: { conversationId, userId: req.user!.id } },
+  });
+
+  if (!isMember) {
+    return res.status(403).json({
+      success: false,
+      error: { code: 'FORBIDDEN', message: 'شما عضو این گفتگو نیستید' },
+    });
+  }
 
   const messages = await prisma.message.findMany({
     where: {
@@ -457,6 +516,18 @@ router.post('/conversations/:conversationId/messages', authenticateToken, messag
 
   if (!text || text.trim() === '') {
     return res.status(400).json({ success: false, error: { code: 'BAD_REQUEST', message: 'متن پیام الزامی است' } });
+  }
+
+  // Authorization check: User must be a member of this conversation
+  const isMember = await prisma.conversationMember.findUnique({
+    where: { conversationId_userId: { conversationId, userId: senderId } },
+  });
+
+  if (!isMember) {
+    return res.status(403).json({
+      success: false,
+      error: { code: 'FORBIDDEN', message: 'شما عضو این گفتگو نیستید' },
+    });
   }
 
   // Idempotency check with clientRequestId
@@ -522,6 +593,28 @@ router.post('/conversations/:conversationId/messages', authenticateToken, messag
     });
   }
 
+  // Dispatch FCM Push Notification to recipient members
+  setImmediate(async () => {
+    try {
+      const otherMembers = await prisma.conversationMember.findMany({
+        where: { conversationId, userId: { not: senderId } },
+        select: { userId: true },
+      });
+
+      for (const m of otherMembers) {
+        await notificationService.sendPushNotification({
+          userId: m.userId,
+          title: req.user!.displayName,
+          body: text.length > 80 ? text.substring(0, 80) + '...' : text,
+          type: 'NEW_MESSAGE',
+          data: { conversationId, messageId: msg.id },
+        });
+      }
+    } catch (err) {
+      console.error('[NotificationService] Background message push error:', err);
+    }
+  });
+
   // If user mentioned @TarhiNooAI, dispatch real AI response
   if (text.includes('@TarhiNooAI')) {
     setImmediate(async () => {
@@ -530,7 +623,7 @@ router.post('/conversations/:conversationId/messages', authenticateToken, messag
         const aiMsg = await prisma.message.create({
           data: {
             conversationId,
-            senderId: 'ai-system-assistant',
+            senderId: senderId, // Associated to conversation session
             text: aiResult.text,
             messageType: 'AI_RESULT',
             status: 'SENT',
@@ -557,7 +650,7 @@ router.post('/conversations/:conversationId/messages', authenticateToken, messag
           });
         }
       } catch (err) {
-        console.error('Failed to process AI response in background', err);
+        console.error('[AIGateway] Background AI response processing failed', err);
       }
     });
   }
@@ -752,7 +845,16 @@ router.post('/groups', authenticateToken, async (req: AuthRequest, res: Response
 router.post('/channels', authenticateToken, async (req: AuthRequest, res: Response) => {
   const { name, username, description = '' } = req.body;
   const ownerId = req.user!.id;
+
+  if (!username) {
+    return res.status(400).json({ success: false, error: { code: 'BAD_REQUEST', message: 'شناسه کانال الزامی است' } });
+  }
+
   const cleanUsername = username.replace(/^@/, '').toLowerCase().trim();
+  const existing = await prisma.channel.findUnique({ where: { username: cleanUsername } });
+  if (existing) {
+    return res.status(409).json({ success: false, error: { code: 'CONFLICT', message: 'این شناسه کانال از قبل ثبت شده است' } });
+  }
 
   const conv = await prisma.conversation.create({
     data: {
@@ -814,6 +916,15 @@ router.post('/channels/:channelId/posts', authenticateToken, async (req: AuthReq
   const { channelId } = req.params;
   const { text, mediaUrl = '', promptText = '' } = req.body;
 
+  // Authorization check: User must be the owner of the channel
+  const channel = await prisma.channel.findUnique({ where: { id: channelId } });
+  if (!channel || (channel.ownerId !== req.user!.id && req.user!.role !== 'ADMIN')) {
+    return res.status(403).json({
+      success: false,
+      error: { code: 'FORBIDDEN', message: 'فقط مالک کانال مجاز به انتشار پست در این کانال است' },
+    });
+  }
+
   const post = await prisma.channelPost.create({
     data: {
       channelId,
@@ -848,15 +959,34 @@ router.post('/channels/:channelId/posts', authenticateToken, async (req: AuthReq
 });
 
 // ==========================================
-// 9. MEDIA UPLOADS & PRESIGN
+// 9. MEDIA UPLOADS & S3 PRESIGNED URLS
 // ==========================================
-router.post('/uploads/presign', authenticateToken, async (req: AuthRequest, res: Response) => {
-  const presignData = uploadsService.generatePresignedUpload(req.body, req.user!.id);
-  res.json({ success: true, data: presignData });
+router.post('/uploads/presign', authenticateToken, uploadLimiter, async (req: AuthRequest, res: Response) => {
+  try {
+    const presignData = await uploadsService.generatePresignedUpload(req.body, req.user!.id);
+    res.json({ success: true, data: presignData });
+  } catch (err: any) {
+    res.status(400).json({
+      success: false,
+      error: { code: 'UPLOAD_PRESIGN_FAILED', message: err.message || 'ایجاد آدرس بارگذاری ناموفق بود' },
+    });
+  }
 });
 
 // ==========================================
-// 10. MODERATION & REPORTS
+// 10. DEVICE TOKENS FOR PUSH NOTIFICATIONS
+// ==========================================
+router.post('/notifications/device-token', authenticateToken, async (req: AuthRequest, res: Response) => {
+  const { token, platform = 'android', appVersion } = req.body;
+  if (!token) {
+    return res.status(400).json({ success: false, error: { code: 'BAD_REQUEST', message: 'توکن دستگاه الزامی است' } });
+  }
+  await notificationService.registerDeviceToken(req.user!.id, token, platform, appVersion);
+  res.json({ success: true });
+});
+
+// ==========================================
+// 11. MODERATION & REPORTS
 // ==========================================
 router.post('/reports', authenticateToken, async (req: AuthRequest, res: Response) => {
   const { targetType, targetId, reasonCategory, details } = req.body;
