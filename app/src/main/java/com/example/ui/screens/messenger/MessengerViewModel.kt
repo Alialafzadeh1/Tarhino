@@ -10,6 +10,9 @@ import com.example.data.local.entity.MessengerConversationEntity
 import com.example.data.local.entity.MessengerMessageEntity
 import com.example.data.local.entity.UserEntity
 import com.example.data.repository.MessengerRepository
+import com.example.data.remote.realtime.RealtimeEvent
+import com.example.data.remote.realtime.RealtimeManager
+import com.example.data.sync.SyncManager
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
@@ -18,12 +21,34 @@ import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
 
 class MessengerViewModel(
-    private val repository: MessengerRepository
+    private val repository: MessengerRepository,
+    private val realtimeManager: RealtimeManager? = null,
+    private val syncManager: SyncManager? = null
 ) : ViewModel() {
+
+    private val _isUserTyping = MutableStateFlow(false)
+    val isUserTyping: StateFlow<Boolean> = _isUserTyping.asStateFlow()
 
     init {
         viewModelScope.launch {
             repository.seedInitialMessengerDataIfNeeded()
+        }
+
+        // Listen for realtime events if manager available
+        realtimeManager?.let { rm ->
+            viewModelScope.launch {
+                rm.events.collect { event ->
+                    when (event) {
+                        is RealtimeEvent.UserTyping -> {
+                            val currentId = _currentConversationId.value?.toString()
+                            if (currentId != null && event.conversationId == currentId) {
+                                _isUserTyping.value = event.isTyping
+                            }
+                        }
+                        else -> {}
+                    }
+                }
+            }
         }
     }
 
@@ -264,12 +289,14 @@ class MessengerViewModel(
 }
 
 class MessengerViewModelFactory(
-    private val repository: MessengerRepository
+    private val repository: MessengerRepository,
+    private val realtimeManager: RealtimeManager? = null,
+    private val syncManager: SyncManager? = null
 ) : ViewModelProvider.Factory {
     @Suppress("UNCHECKED_CAST")
     override fun <T : ViewModel> create(modelClass: Class<T>): T {
         if (modelClass.isAssignableFrom(MessengerViewModel::class.java)) {
-            return MessengerViewModel(repository) as T
+            return MessengerViewModel(repository, realtimeManager, syncManager) as T
         }
         throw IllegalArgumentException("Unknown ViewModel class")
     }

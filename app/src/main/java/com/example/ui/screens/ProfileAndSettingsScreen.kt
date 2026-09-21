@@ -20,6 +20,7 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Check
+import androidx.compose.material.icons.filled.CloudQueue
 import androidx.compose.material.icons.filled.Diamond
 import androidx.compose.material.icons.filled.Language
 import androidx.compose.material.icons.filled.Person
@@ -251,6 +252,36 @@ fun ProfileAndSettingsScreen(
                             Icon(Icons.Default.Security, contentDescription = "Admin", tint = PrimaryGold, modifier = Modifier.size(20.dp))
                             Spacer(modifier = Modifier.width(10.dp))
                             Text(text = if (currentLanguage == AppLanguage.PERSIAN) "ورود به پنل مدیریت (Admin Panel)" else "Admin Panel Workspace", color = TextPrimary, fontSize = 13.sp, fontWeight = FontWeight.Bold)
+                        }
+                    }
+                }
+
+                Spacer(modifier = Modifier.height(10.dp))
+
+                // Backend & Realtime Config Entry (Phase 9)
+                Box(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clip(RoundedCornerShape(14.dp))
+                        .background(SurfaceCard)
+                        .border(1.dp, PrimaryGold.copy(alpha = 0.4f), RoundedCornerShape(14.dp))
+                        .clickable { onNavigate("backend_config") }
+                        .padding(14.dp)
+                ) {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Icon(Icons.Default.CloudQueue, contentDescription = "Backend", tint = PrimaryGold, modifier = Modifier.size(20.dp))
+                            Spacer(modifier = Modifier.width(10.dp))
+                            Text(
+                                text = if (currentLanguage == AppLanguage.PERSIAN) "پیکربندی سرور و همگام‌سازی (Backend & Sync)" else "Backend & Sync Hub",
+                                color = TextPrimary,
+                                fontSize = 13.sp,
+                                fontWeight = FontWeight.Bold
+                            )
                         }
                     }
                 }

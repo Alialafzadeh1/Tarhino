@@ -108,6 +108,7 @@ fun PrivateChatScreen(
     onOpenPromptBuilder: (String) -> Unit,
     onOpenNavaStudio: () -> Unit,
     onReport: (String, Long) -> Unit,
+    isUserTyping: Boolean = false,
     snackbarHostState: SnackbarHostState
 ) {
     val isFa = currentLanguage == AppLanguage.PERSIAN
@@ -187,13 +188,17 @@ fun PrivateChatScreen(
                         overflow = TextOverflow.Ellipsis
                     )
                     Text(
-                        text = when (conversation?.type) {
-                            "AI" -> if (isFa) "هوش مصنوعی آماده پاسخگویی" else "AI Active"
-                            "GROUP" -> if (isFa) "گروه اعضا" else "Group"
-                            "CHANNEL" -> if (isFa) "کانال رسمی" else "Official Channel"
-                            else -> if (isFa) "آنلاین" else "Online"
+                        text = if (isUserTyping) {
+                            if (isFa) "در حال نوشتن..." else "typing..."
+                        } else {
+                            when (conversation?.type) {
+                                "AI" -> if (isFa) "هوش مصنوعی آماده پاسخگویی" else "AI Active"
+                                "GROUP" -> if (isFa) "گروه اعضا" else "Group"
+                                "CHANNEL" -> if (isFa) "کانال رسمی" else "Official Channel"
+                                else -> if (isFa) "آنلاین" else "Online"
+                            }
                         },
-                        color = if (conversation?.type == "AI") PrimaryGold else AccentCyan,
+                        color = if (isUserTyping) PrimaryGold else if (conversation?.type == "AI") PrimaryGold else AccentCyan,
                         fontSize = 11.sp
                     )
                 }

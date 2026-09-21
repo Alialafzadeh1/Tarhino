@@ -29,6 +29,7 @@ import androidx.compose.material.icons.filled.Campaign
 import androidx.compose.material.icons.filled.Chat
 import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.Close
+import androidx.compose.material.icons.filled.CloudQueue
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material.icons.filled.Group
@@ -107,6 +108,7 @@ fun MessengerScreen(
     onToggleArchive: (Long, Boolean) -> Unit,
     onDeleteConversation: (Long) -> Unit,
     onMarkAsRead: (Long) -> Unit,
+    onOpenBackendConfig: () -> Unit = {},
     snackbarHostState: SnackbarHostState
 ) {
     val isFa = currentLanguage == AppLanguage.PERSIAN
@@ -173,6 +175,15 @@ fun MessengerScreen(
                 }
 
                 Row(verticalAlignment = Alignment.CenterVertically) {
+                    IconButton(
+                        onClick = onOpenBackendConfig
+                    ) {
+                        Icon(
+                            imageVector = Icons.Filled.CloudQueue,
+                            contentDescription = "Backend Status",
+                            tint = PrimaryGold
+                        )
+                    }
                     IconButton(
                         onClick = { isSearchActive = !isSearchActive }
                     ) {

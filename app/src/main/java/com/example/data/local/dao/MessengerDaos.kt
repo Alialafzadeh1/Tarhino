@@ -54,6 +54,9 @@ interface MessengerUserDao {
     @Query("UPDATE users SET isContact = :isContact WHERE id = :userId")
     suspend fun setUserContact(userId: Long, isContact: Boolean)
 
+    @Query("UPDATE users SET isOnline = :isOnline, lastSeen = :lastSeen WHERE id = :userId")
+    suspend fun setUserOnlineStatus(userId: Long, isOnline: Boolean, lastSeen: Long)
+
     @Query("SELECT COUNT(*) FROM users")
     suspend fun getUserCount(): Int
 }

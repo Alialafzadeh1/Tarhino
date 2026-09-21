@@ -32,6 +32,11 @@ import com.example.data.local.AppDatabase
 import com.example.data.local.entity.AssetEntity
 import com.example.data.local.entity.ProjectEntity
 import com.example.data.local.entity.PromptEntity
+import com.example.data.remote.api.NetworkModule
+import com.example.data.remote.auth.AuthRepository
+import com.example.data.remote.auth.SessionManager
+import com.example.data.remote.realtime.RealtimeManagerImpl
+import com.example.data.sync.SyncManager
 import com.example.data.repository.MessengerRepository
 import com.example.data.repository.TarhiNooRepository
 import com.example.domain.model.AICoreState
@@ -52,6 +57,7 @@ import com.example.ui.screens.ProfileAndSettingsScreen
 import com.example.ui.screens.ProjectsScreen
 import com.example.ui.screens.PromptBuilderScreen
 import com.example.ui.screens.PromptOptimizerScreen
+import com.example.ui.screens.messenger.BackendConfigScreen
 import com.example.ui.screens.messenger.ChannelScreen
 import com.example.ui.screens.messenger.MessengerScreen
 import com.example.ui.screens.messenger.MessengerViewModel
@@ -84,8 +90,21 @@ fun TarhiNooApp() {
         val db = AppDatabase.getDatabase(context)
         MessengerRepository(db)
     }
+    val sessionManager = remember { SessionManager(context) }
+    val moshi = remember { NetworkModule.provideMoshi() }
+    val okHttpClient = remember { NetworkModule.provideOkHttpClient(sessionManager) }
+    val apiService = remember { NetworkModule.provideApiService(okHttpClient, moshi) }
+    val realtimeManager = remember { RealtimeManagerImpl(sessionManager, moshi) }
+    val syncManager = remember {
+        val db = AppDatabase.getDatabase(context)
+        SyncManager(db, apiService, realtimeManager, sessionManager)
+    }
+    val authRepository = remember {
+        val db = AppDatabase.getDatabase(context)
+        AuthRepository(apiService, sessionManager, db)
+    }
     val messengerViewModel = remember {
-        MessengerViewModel(messengerRepository)
+        MessengerViewModel(messengerRepository, realtimeManager, syncManager)
     }
     val geminiService = remember { GeminiService() }
     val snackbarHostState = remember { SnackbarHostState() }
@@ -123,6 +142,7 @@ fun TarhiNooApp() {
     val activeMessengerChannel by messengerViewModel.activeChannel.collectAsState()
     val activeMessengerChannelPosts by messengerViewModel.activeChannelPosts.collectAsState()
     val activeUserProfile by messengerViewModel.activeUserProfile.collectAsState()
+    val isUserTyping by messengerViewModel.isUserTyping.collectAsState()
 
     // Active conversation state
     var activeConversationId by remember { mutableLongStateOf(0L) }
@@ -471,6 +491,7 @@ fun TarhiNooApp() {
                                 onToggleArchive = { id, arch -> messengerViewModel.toggleArchiveConversation(id, arch) },
                                 onDeleteConversation = { id -> messengerViewModel.deleteConversation(id) },
                                 onMarkAsRead = { id -> messengerViewModel.markAsRead(id) },
+                                onOpenBackendConfig = { navigateTo("backend_config") },
                                 snackbarHostState = snackbarHostState
                             )
 
@@ -497,6 +518,7 @@ fun TarhiNooApp() {
                                 },
                                 onOpenNavaStudio = { navigateTo("nava_studio") },
                                 onReport = { type, id -> messengerViewModel.report(type, id, "CONTENT_VIOLATION") },
+                                isUserTyping = isUserTyping,
                                 snackbarHostState = snackbarHostState
                             )
 
@@ -580,6 +602,16 @@ fun TarhiNooApp() {
                                     currentLanguage = if (currentLanguage == AppLanguage.PERSIAN) AppLanguage.ENGLISH else AppLanguage.PERSIAN
                                 },
                                 onNavigate = { dest -> navigateTo(dest) },
+                                snackbarHostState = snackbarHostState
+                            )
+
+                            "backend_config" -> BackendConfigScreen(
+                                currentLanguage = currentLanguage,
+                                sessionManager = sessionManager,
+                                realtimeManager = realtimeManager,
+                                syncManager = syncManager,
+                                authRepository = authRepository,
+                                onBack = { navigateBack() },
                                 snackbarHostState = snackbarHostState
                             )
 
