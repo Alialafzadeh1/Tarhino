@@ -1,0 +1,39 @@
+version: '3.8'
+
+services:
+  tarhinoo-backend:
+    build: .
+    container_name: tarhinoo-backend
+    restart: unless-stopped
+    ports:
+      - "8080:8080"
+    environment:
+      - NODE_ENV=production
+      - PORT=8080
+      - DATABASE_URL=postgresql://tarhinoo:tarhinoo_pass@postgres:5432/tarhinoo_db?schema=public
+      - JWT_SECRET=tarhinoo_super_secret_jwt_key_production_2026
+      - JWT_REFRESH_SECRET=tarhinoo_super_secret_refresh_jwt_key_production_2026
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  postgres:
+    image: postgres:16-alpine
+    container_name: tarhinoo-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: tarhinoo
+      POSTGRES_PASSWORD: tarhinoo_pass
+      POSTGRES_DB: tarhinoo_db
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U tarhinoo -d tarhinoo_db"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+volumes:
+  postgres_data:

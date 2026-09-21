@@ -3,6 +3,7 @@ package com.example.ui.screens.messenger
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.viewModelScope
+import com.example.ai.GeminiService
 import com.example.data.local.entity.ChannelEntity
 import com.example.data.local.entity.ChannelPostEntity
 import com.example.data.local.entity.GroupEntity
@@ -23,7 +24,8 @@ import kotlinx.coroutines.launch
 class MessengerViewModel(
     private val repository: MessengerRepository,
     private val realtimeManager: RealtimeManager? = null,
-    private val syncManager: SyncManager? = null
+    private val syncManager: SyncManager? = null,
+    private val geminiService: GeminiService = GeminiService()
 ) : ViewModel() {
 
     private val _isUserTyping = MutableStateFlow(false)
@@ -177,21 +179,29 @@ class MessengerViewModel(
                 replyToSenderName = replyToSender
             )
 
-            // AI Mention / AI Conversation Simulation trigger
+            // AI Mention or AI Conversation: Real Creative AI Intelligence
             val conv = _activeConversation.value
             if (conv?.type == "AI" || text.contains("@TarhiNooAI", ignoreCase = true)) {
-                // Simulate smart assistant response from Tarhi Noo AI
                 val cleanPrompt = text.removePrefix("@TarhiNooAI").trim()
-                val aiResponseText = "«من هوش مصنوعی طرحی نو هستم؛ از رسانه هنری طرحینه مدیا.»\n\nدرخواست شما دریافت شد: «$cleanPrompt»\n\nبرای این موضوع، پرامپت معماری و سینمایی با نورپردازی حجمی، نسبت ابعاد 16:9 و رندر 8K آماده شد. با لمس دکمه زیر می‌توانید آن را مستقیماً به Prompt Builder انتقال دهید."
+                val targetModule = if (cleanPrompt.contains("موسیقی") || cleanPrompt.contains("صوت") || cleanPrompt.contains("audio") || cleanPrompt.contains("music")) {
+                    "NAVA_STUDIO"
+                } else {
+                    "PROMPT_BUILDER"
+                }
+                val realAiResponse = geminiService.generateCreativeResponse(
+                    userPrompt = if (cleanPrompt.isNotBlank()) cleanPrompt else "معماری سینمایی ایرانی و هنر مفهومی",
+                    systemInstruction = "You are Tarhi Noo AI (هوش مصنوعی طرحی نو), from Tarhineh Media (رسانه هنری طرحینه مدیا). Always introduce yourself as: «من هوش مصنوعی طرحی نو هستم؛ از رسانه هنری طرحینه مدیا.» Provide visionary artistic, prompt engineering, and cinematic concepts in fluent Persian."
+                )
+
                 repository.sendMessage(
                     conversationId = convId,
-                    text = aiResponseText,
+                    text = realAiResponse,
                     senderId = 1L,
                     senderDisplayName = "هوش مصنوعی طرحی نو",
                     messageType = "AI_RESULT",
                     isAiGenerated = true,
-                    aiActionPrompt = if (cleanPrompt.isNotBlank()) cleanPrompt else "Cinematic Iranian architecture at twilight with turquoise glowing tiles, 8k luxury",
-                    aiTargetModule = "PROMPT_BUILDER"
+                    aiActionPrompt = if (cleanPrompt.isNotBlank()) cleanPrompt else "Cinematic Iranian architecture at twilight with turquoise glowing tiles, volumetric lighting, 8k luxury",
+                    aiTargetModule = targetModule
                 )
             }
         }

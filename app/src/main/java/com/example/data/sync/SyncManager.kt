@@ -92,11 +92,23 @@ class SyncManager(
                 val convId = event.conversationId.toLongOrNull() ?: return@withContext
                 val senderId = event.senderId.toLongOrNull() ?: 0L
 
-                // Prevent duplicate message if already saved via clientRequestId
-                val existingMessages = db.messengerMessageDao().getMessageById(event.messageId.toLongOrNull() ?: -1L)
-                if (existingMessages == null) {
+                // Deduplication check via clientRequestId or serverId
+                val existingByReqId = if (!event.clientRequestId.isNullOrBlank()) {
+                    db.messengerMessageDao().getMessageByClientRequestId(event.clientRequestId)
+                } else null
+
+                val existingByServerId = db.messengerMessageDao().getMessageByServerId(event.messageId)
+
+                if (existingByReqId != null) {
+                    db.messengerMessageDao().updateDeliveryStatusAndServerId(
+                        id = existingByReqId.id,
+                        status = "DELIVERED",
+                        serverId = event.messageId
+                    )
+                } else if (existingByServerId == null) {
                     val entity = MessengerMessageEntity(
-                        id = event.messageId.toLongOrNull() ?: 0L,
+                        serverId = event.messageId,
+                        clientRequestId = event.clientRequestId,
                         conversationId = convId,
                         senderId = senderId,
                         senderDisplayName = event.senderDisplayName,
@@ -226,8 +238,41 @@ class SyncManager(
         if (apiService == null || !BackendConfig.isBackendConfigured) return@withContext
 
         try {
-            // Note: Messages created while offline with PENDING status are retried here
-            Log.d("TarhiNooSync", "Checking and retrying pending messages...")
+            val pendingMessages = db.messengerMessageDao().getPendingMessages()
+            if (pendingMessages.isEmpty()) return@withContext
+
+            Log.d("TarhiNooSync", "Retrying ${pendingMessages.size} pending messages...")
+            for (msg in pendingMessages) {
+                val clientReqId = msg.clientRequestId ?: java.util.UUID.randomUUID().toString()
+                val request = com.example.data.remote.model.SendMessageRequest(
+                    clientRequestId = clientReqId,
+                    conversationId = msg.conversationId.toString(),
+                    text = msg.text,
+                    messageType = msg.messageType,
+                    replyToMessageId = msg.replyToMessageId?.toString(),
+                    replyToText = msg.replyToText,
+                    replyToSenderName = msg.replyToSenderName,
+                    aiActionPrompt = msg.aiActionPrompt,
+                    aiTargetModule = msg.aiTargetModule
+                )
+                try {
+                    val response = apiService.sendMessage(msg.conversationId.toString(), request)
+                    if (response.isSuccessful && response.body()?.success == true) {
+                        val serverMsg = response.body()!!.data!!
+                        db.messengerMessageDao().updateDeliveryStatusAndServerId(
+                            id = msg.id,
+                            status = "SENT",
+                            serverId = serverMsg.id
+                        )
+                    } else if (response.code() in 400..499) {
+                        // Permanent failure from backend
+                        db.messengerMessageDao().updateDeliveryStatus(msg.id, "FAILED")
+                    }
+                } catch (networkEx: Exception) {
+                    Log.w("TarhiNooSync", "Network error retrying message ${msg.id}: ${networkEx.message}")
+                    break
+                }
+            }
         } catch (e: Exception) {
             Log.e("TarhiNooSync", "Error in retryPendingMessages: ${e.message}")
         }

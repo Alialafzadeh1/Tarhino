@@ -52,7 +52,9 @@ data class MessengerConversationEntity(
     tableName = "messenger_messages",
     indices = [
         Index(value = ["conversationId"]),
-        Index(value = ["createdAt"])
+        Index(value = ["createdAt"]),
+        Index(value = ["clientRequestId"]),
+        Index(value = ["serverId"])
     ]
 )
 data class MessengerMessageEntity(
@@ -63,6 +65,8 @@ data class MessengerMessageEntity(
     val text: String,
     val messageType: String = "TEXT", // "TEXT", "IMAGE", "VIDEO", "FILE", "AUDIO", "VOICE", "SYSTEM", "AI_RESULT"
     val deliveryStatus: String = "SENT", // "LOCAL_ONLY", "PENDING", "SENT", "DELIVERED", "READ", "FAILED"
+    val serverId: String? = null,
+    val clientRequestId: String? = null,
     val replyToMessageId: Long? = null,
     val replyToText: String? = null,
     val replyToSenderName: String? = null,

@@ -126,6 +126,21 @@ interface MessengerMessageDao {
     @Query("SELECT * FROM messenger_messages WHERE text LIKE '%' || :query || '%' AND deletedAt IS NULL ORDER BY createdAt DESC")
     fun globalSearchMessages(query: String): Flow<List<MessengerMessageEntity>>
 
+    @Query("SELECT * FROM messenger_messages WHERE clientRequestId = :clientRequestId LIMIT 1")
+    suspend fun getMessageByClientRequestId(clientRequestId: String): MessengerMessageEntity?
+
+    @Query("SELECT * FROM messenger_messages WHERE serverId = :serverId LIMIT 1")
+    suspend fun getMessageByServerId(serverId: String): MessengerMessageEntity?
+
+    @Query("SELECT * FROM messenger_messages WHERE deliveryStatus = 'PENDING' ORDER BY createdAt ASC")
+    suspend fun getPendingMessages(): List<MessengerMessageEntity>
+
+    @Query("UPDATE messenger_messages SET deliveryStatus = :status, serverId = :serverId WHERE id = :id")
+    suspend fun updateDeliveryStatusAndServerId(id: Long, status: String, serverId: String?)
+
+    @Query("UPDATE messenger_messages SET deliveryStatus = :status WHERE id = :id")
+    suspend fun updateDeliveryStatus(id: Long, status: String)
+
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun insertMessage(message: MessengerMessageEntity): Long
 

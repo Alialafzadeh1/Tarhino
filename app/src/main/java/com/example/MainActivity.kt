@@ -86,14 +86,14 @@ fun TarhiNooApp() {
         val db = AppDatabase.getDatabase(context)
         TarhiNooRepository(db)
     }
-    val messengerRepository = remember {
-        val db = AppDatabase.getDatabase(context)
-        MessengerRepository(db)
-    }
     val sessionManager = remember { SessionManager(context) }
     val moshi = remember { NetworkModule.provideMoshi() }
     val okHttpClient = remember { NetworkModule.provideOkHttpClient(sessionManager) }
     val apiService = remember { NetworkModule.provideApiService(okHttpClient, moshi) }
+    val messengerRepository = remember {
+        val db = AppDatabase.getDatabase(context)
+        MessengerRepository(db, apiService)
+    }
     val realtimeManager = remember { RealtimeManagerImpl(sessionManager, moshi) }
     val syncManager = remember {
         val db = AppDatabase.getDatabase(context)
@@ -103,10 +103,10 @@ fun TarhiNooApp() {
         val db = AppDatabase.getDatabase(context)
         AuthRepository(apiService, sessionManager, db)
     }
-    val messengerViewModel = remember {
-        MessengerViewModel(messengerRepository, realtimeManager, syncManager)
-    }
     val geminiService = remember { GeminiService() }
+    val messengerViewModel = remember {
+        MessengerViewModel(messengerRepository, realtimeManager, syncManager, geminiService)
+    }
     val snackbarHostState = remember { SnackbarHostState() }
     val scope = rememberCoroutineScope()
 

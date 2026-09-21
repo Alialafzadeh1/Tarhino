@@ -28,12 +28,16 @@ import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Image
 import androidx.compose.material.icons.filled.Movie
 import androidx.compose.material.icons.filled.Widgets
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
+import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.OutlinedTextFieldDefaults
 import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -86,6 +90,110 @@ fun AssetVaultScreen(
         }
     }
 
+    var showAddDialog by remember { mutableStateOf(false) }
+    var newAssetTitle by remember { mutableStateOf("") }
+    var newAssetType by remember { mutableStateOf("IMAGE") }
+
+    val supportedTypes = listOf(
+        "IMAGE" to if (currentLanguage == AppLanguage.PERSIAN) "تصویر (Image)" else "Image",
+        "VIDEO" to if (currentLanguage == AppLanguage.PERSIAN) "ویدیو (Video)" else "Video",
+        "AUDIO" to if (currentLanguage == AppLanguage.PERSIAN) "صوت / موسیقی (Audio)" else "Audio",
+        "FILE" to if (currentLanguage == AppLanguage.PERSIAN) "فایل / سند (File)" else "File",
+        "PROJECT_ASSET" to if (currentLanguage == AppLanguage.PERSIAN) "دارایی پروژه (Project Asset)" else "Project Asset",
+        "AI_GENERATED" to if (currentLanguage == AppLanguage.PERSIAN) "خروجی هوش مصنوعی (AI Generated)" else "AI Generated"
+    )
+
+    if (showAddDialog) {
+        AlertDialog(
+            onDismissRequest = { showAddDialog = false },
+            containerColor = SurfaceCard,
+            title = {
+                Text(
+                    text = if (currentLanguage == AppLanguage.PERSIAN) "بارگذاری دارایی جدید" else "Upload New Asset",
+                    color = PrimaryGold,
+                    fontSize = 16.sp,
+                    fontWeight = FontWeight.Bold
+                )
+            },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                    Text(
+                        text = if (currentLanguage == AppLanguage.PERSIAN) "عنوان یا نام فایل دارایی:" else "Asset Title or Filename:",
+                        color = TextSecondary,
+                        fontSize = 12.sp
+                    )
+                    OutlinedTextField(
+                        value = newAssetTitle,
+                        onValueChange = { newAssetTitle = it },
+                        singleLine = true,
+                        placeholder = { Text(if (currentLanguage == AppLanguage.PERSIAN) "مثال: رندر نهایی پاویون ایرانی" else "e.g., Pavilion 8k render", color = TextMuted) },
+                        colors = OutlinedTextFieldDefaults.colors(
+                            focusedBorderColor = SoftGold,
+                            unfocusedBorderColor = SurfaceCardBorder,
+                            focusedTextColor = TextPrimary,
+                            unfocusedTextColor = TextPrimary
+                        ),
+                        modifier = Modifier.fillMaxWidth()
+                    )
+
+                    Text(
+                        text = if (currentLanguage == AppLanguage.PERSIAN) "نوع رسانه:" else "Asset Type:",
+                        color = TextSecondary,
+                        fontSize = 12.sp
+                    )
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .horizontalScroll(rememberScrollState()),
+                        horizontalArrangement = Arrangement.spacedBy(6.dp)
+                    ) {
+                        supportedTypes.forEach { (typeKey, typeLabel) ->
+                            val isChosen = newAssetType == typeKey
+                            Box(
+                                modifier = Modifier
+                                    .clip(RoundedCornerShape(8.dp))
+                                    .background(if (isChosen) BrandGreen else SurfaceCard)
+                                    .border(1.dp, if (isChosen) SoftGold else SurfaceCardBorder, RoundedCornerShape(8.dp))
+                                    .clickable { newAssetType = typeKey }
+                                    .padding(horizontal = 10.dp, vertical = 6.dp)
+                            ) {
+                                Text(
+                                    text = typeLabel,
+                                    color = if (isChosen) SoftGold else TextSecondary,
+                                    fontSize = 11.sp
+                                )
+                            }
+                        }
+                    }
+                }
+            },
+            confirmButton = {
+                Button(
+                    onClick = {
+                        if (newAssetTitle.isNotBlank()) {
+                            onAddAsset(newAssetTitle.trim(), newAssetType)
+                            showAddDialog = false
+                            newAssetTitle = ""
+                            scope.launch {
+                                snackbarHostState.showSnackbar(
+                                    if (currentLanguage == AppLanguage.PERSIAN) "دارایی در مخزن ثبت شد" else "Asset registered in vault"
+                                )
+                            }
+                        }
+                    },
+                    colors = ButtonDefaults.buttonColors(containerColor = PrimaryGold, contentColor = BgDark)
+                ) {
+                    Text(if (currentLanguage == AppLanguage.PERSIAN) "ثبت در مخزن" else "Save to Vault", fontWeight = FontWeight.Bold)
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { showAddDialog = false }) {
+                    Text(if (currentLanguage == AppLanguage.PERSIAN) "انصراف" else "Cancel", color = TextSecondary)
+                }
+            }
+        )
+    }
+
     Box(modifier = Modifier.fillMaxSize().background(BgDark)) {
         LazyColumn(
             modifier = Modifier.fillMaxSize(),
@@ -115,20 +223,13 @@ fun AssetVaultScreen(
                     }
 
                     Button(
-                        onClick = {
-                            onAddAsset("دارایی جدید استودیو", "IMAGE")
-                            scope.launch {
-                                snackbarHostState.showSnackbar(
-                                    if (currentLanguage == AppLanguage.PERSIAN) "دارایی افزوده شد" else "Asset added"
-                                )
-                            }
-                        },
+                        onClick = { showAddDialog = true },
                         colors = ButtonDefaults.buttonColors(containerColor = PrimaryGold, contentColor = BgDark),
                         shape = RoundedCornerShape(10.dp)
                     ) {
                         Icon(Icons.Default.Add, contentDescription = "Add", modifier = Modifier.size(16.dp))
                         Spacer(modifier = Modifier.width(4.dp))
-                        Text(if (currentLanguage == AppLanguage.PERSIAN) "افزودن" else "Add", fontSize = 12.sp, fontWeight = FontWeight.Bold)
+                        Text(if (currentLanguage == AppLanguage.PERSIAN) "بارگذاری" else "Upload", fontSize = 12.sp, fontWeight = FontWeight.Bold)
                     }
                 }
             }
@@ -166,15 +267,13 @@ fun AssetVaultScreen(
             if (filteredAssets.isEmpty()) {
                 item {
                     EmptyState(
-                        title = if (currentLanguage == AppLanguage.PERSIAN) "هنوز فایلی در این دسته ذخیره نشده است" else "Vault is currently empty",
+                        title = if (currentLanguage == AppLanguage.PERSIAN) "مخزن دارایی‌ها خالی است" else "Vault is currently empty",
                         description = if (currentLanguage == AppLanguage.PERSIAN)
-                            "خروجی‌های تصویری و ویدیویی استودیو، پریست‌ها و پرامپت‌ها در این مخزن قرار می‌گیرند."
+                            "فایل‌های ویدیویی، تصاویر رندر، فایل‌های صوتی و اسناد پروژه را از دکمه بارگذاری به مخزن اضافه کنید."
                         else
-                            "Saved images, videos, and presets will be organized here.",
-                        buttonText = if (currentLanguage == AppLanguage.PERSIAN) "+ ثبت دارایی نمونه" else "+ Add Sample Asset",
-                        onButtonClick = {
-                            onAddAsset("تصویر رندرینگ استودیویی عطر", "IMAGE")
-                        }
+                            "Upload images, videos, audio, or project documents to manage your creative assets.",
+                        buttonText = null,
+                        onButtonClick = null
                     )
                 }
             } else {

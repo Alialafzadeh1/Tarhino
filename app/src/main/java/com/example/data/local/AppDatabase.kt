@@ -64,7 +64,7 @@ import androidx.sqlite.db.SupportSQLiteDatabase
         BlockedUserEntity::class,
         ReportEntity::class
     ],
-    version = 2,
+    version = 3,
     exportSchema = false
 )
 abstract class AppDatabase : RoomDatabase() {
@@ -296,14 +296,22 @@ abstract class AppDatabase : RoomDatabase() {
             }
         }
 
+        val MIGRATION_2_3 = object : Migration(2, 3) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("ALTER TABLE messenger_messages ADD COLUMN serverId TEXT DEFAULT NULL")
+                db.execSQL("ALTER TABLE messenger_messages ADD COLUMN clientRequestId TEXT DEFAULT NULL")
+                db.execSQL("CREATE INDEX IF NOT EXISTS index_messenger_messages_clientRequestId ON messenger_messages(clientRequestId)")
+                db.execSQL("CREATE INDEX IF NOT EXISTS index_messenger_messages_serverId ON messenger_messages(serverId)")
+            }
+        }
+
         fun getDatabase(context: Context): AppDatabase {
             return INSTANCE ?: synchronized(this) {
                 val instance = Room.databaseBuilder(
                     context.applicationContext,
                     AppDatabase::class.java,
                     "tarhi_noo_database.db"
-                ).addMigrations(MIGRATION_1_2)
-                 .fallbackToDestructiveMigration()
+                ).addMigrations(MIGRATION_1_2, MIGRATION_2_3)
                  .build()
                 INSTANCE = instance
                 instance

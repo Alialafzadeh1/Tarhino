@@ -33,7 +33,7 @@ class GeminiService {
         // If a real API key is configured and not default placeholder, call Gemini REST API
         if (!apiKey.isNullOrBlank() && apiKey != "MY_GEMINI_API_KEY") {
             try {
-                val url = "https://generativelanguage.googleapis.com/v1beta/models/gemini-3.5-flash:generateContent?key=$apiKey"
+                val url = "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=$apiKey"
                 val jsonPayload = JSONObject().apply {
                     put("contents", JSONArray().apply {
                         put(JSONObject().apply {

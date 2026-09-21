@@ -18,11 +18,18 @@ import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.firstOrNull
 import kotlinx.coroutines.withContext
 
+import com.example.data.remote.api.TarhiNooApiService
+import com.example.data.remote.config.BackendConfig
+import com.example.data.remote.model.SendMessageRequest
+
 /**
  * Clean Room-based repository providing reactive data access for Tarhi Noo Messenger,
  * covering Users, Conversations, Messages, Groups, Channels, Reactions, Attachments, and Moderation.
  */
-class MessengerRepository(private val db: AppDatabase) {
+class MessengerRepository(
+    private val db: AppDatabase,
+    private val apiService: TarhiNooApiService? = null
+) {
 
     // --- Users & Contacts ---
     val allActiveUsers: Flow<List<UserEntity>> = db.messengerUserDao().getAllActiveUsers()
@@ -41,6 +48,30 @@ class MessengerRepository(private val db: AppDatabase) {
     fun searchUsers(query: String): Flow<List<UserEntity>> {
         val clean = query.removePrefix("@").trim()
         return db.messengerUserDao().searchUsers(clean)
+    }
+
+    suspend fun queryRemoteUsers(query: String) = withContext(Dispatchers.IO) {
+        if (!BackendConfig.isBackendConfigured || apiService == null) return@withContext
+        val clean = query.removePrefix("@").trim()
+        if (clean.isBlank()) return@withContext
+        try {
+            val response = apiService.searchUsers(clean)
+            if (response.isSuccessful && response.body()?.success == true) {
+                val users = response.body()?.data.orEmpty()
+                val entities = users.map { dto ->
+                    UserEntity(
+                        id = dto.id.toLongOrNull() ?: System.currentTimeMillis(),
+                        username = dto.username,
+                        displayName = dto.displayName,
+                        avatarUrl = dto.avatarUrl,
+                        bio = dto.bio,
+                        isOnline = dto.isOnline,
+                        isContact = false
+                    )
+                }
+                db.messengerUserDao().insertUsers(entities)
+            }
+        } catch (_: Exception) {}
     }
 
     suspend fun insertOrUpdateUser(user: UserEntity): Long = withContext(Dispatchers.IO) {
@@ -209,13 +240,19 @@ class MessengerRepository(private val db: AppDatabase) {
         aiActionPrompt: String? = null,
         aiTargetModule: String? = null
     ): Long = withContext(Dispatchers.IO) {
+        val clientRequestId = java.util.UUID.randomUUID().toString()
+        val initialStatus = if (senderId == 0L) {
+            if (BackendConfig.isBackendConfigured && apiService != null) "PENDING" else "SENT"
+        } else "READ"
+
         val message = MessengerMessageEntity(
             conversationId = conversationId,
             senderId = senderId,
             senderDisplayName = senderDisplayName,
             text = text,
             messageType = messageType,
-            deliveryStatus = if (senderId == 0L) "SENT" else "READ",
+            deliveryStatus = initialStatus,
+            clientRequestId = clientRequestId,
             replyToMessageId = replyToMessageId,
             replyToText = replyToText,
             replyToSenderName = replyToSenderName,
@@ -234,6 +271,37 @@ class MessengerRepository(private val db: AppDatabase) {
             time = message.createdAt,
             unreadDelta = unreadDelta
         )
+
+        // If backend is active and message is from current user, dispatch immediately to API
+        if (senderId == 0L && BackendConfig.isBackendConfigured && apiService != null) {
+            try {
+                val req = SendMessageRequest(
+                    clientRequestId = clientRequestId,
+                    conversationId = conversationId.toString(),
+                    text = text,
+                    messageType = messageType,
+                    replyToMessageId = replyToMessageId?.toString(),
+                    replyToText = replyToText,
+                    replyToSenderName = replyToSenderName,
+                    aiActionPrompt = aiActionPrompt,
+                    aiTargetModule = aiTargetModule
+                )
+                val response = apiService.sendMessage(conversationId.toString(), req)
+                if (response.isSuccessful && response.body()?.success == true) {
+                    val serverMsg = response.body()!!.data!!
+                    db.messengerMessageDao().updateDeliveryStatusAndServerId(
+                        id = msgId,
+                        status = "SENT",
+                        serverId = serverMsg.id
+                    )
+                } else if (response.code() in 400..499) {
+                    db.messengerMessageDao().updateDeliveryStatus(msgId, "FAILED")
+                }
+            } catch (_: Exception) {
+                // Keep status as PENDING, SyncManager will retry when reconnected
+            }
+        }
+
         msgId
     }
 
@@ -364,47 +432,24 @@ class MessengerRepository(private val db: AppDatabase) {
     // --- Initial Seed Data for Messenger (Real, clean local seed) ---
     suspend fun seedInitialMessengerDataIfNeeded() = withContext(Dispatchers.IO) {
         if (db.messengerUserDao().getUserCount() == 0) {
-            val initialUsers = listOf(
-                UserEntity(
-                    id = 1L,
-                    username = "tarhinoo_ai",
-                    displayName = "هوش مصنوعی طرحی نو",
-                    bio = "«من هوش مصنوعی طرحی نو هستم؛ از رسانه هنری طرحینه مدیا.» معمار پرامپت، مشاور هنری و پردازش خلاق",
-                    isOnline = true,
-                    isVerified = true,
-                    isContact = true
-                ),
-                UserEntity(
-                    id = 2L,
-                    username = "reza_art",
-                    displayName = "رضا مهدوی",
-                    bio = "طراح هویت بصری و کاربر حرفه‌ای معمار پرامپت طرحی نو",
-                    isOnline = true,
-                    isVerified = true,
-                    isContact = true
-                ),
-                UserEntity(
-                    id = 3L,
-                    username = "sara_cinema",
-                    displayName = "سارا علوی",
-                    bio = "فیلمساز و کارگردان هوش مصنوعی - تخصص در ویدیوهای سینمایی Veo و Sora",
-                    isOnline = false,
-                    isVerified = false,
-                    isContact = true
-                ),
-                UserEntity(
-                    id = 4L,
-                    username = "tarhineh_studio",
-                    displayName = "استودیو طرحینه",
-                    bio = "کانون نوآوری هنر رسانه‌ای طرحینه مدیا",
-                    isOnline = true,
-                    isVerified = true,
-                    isContact = false
-                )
-            )
-            db.messengerUserDao().insertUsers(initialUsers)
+            val isDebug = try {
+                com.example.BuildConfig.DEBUG
+            } catch (_: Exception) {
+                false
+            }
 
-            // 1. Conversation with Tarhi Noo AI
+            // Always seed Tarhi Noo AI
+            val aiUser = UserEntity(
+                id = 1L,
+                username = "tarhinoo_ai",
+                displayName = "هوش مصنوعی طرحی نو",
+                bio = "«من هوش مصنوعی طرحی نو هستم؛ از رسانه هنری طرحینه مدیا.» معمار پرامپت، مشاور هنری و پردازش خلاق",
+                isOnline = true,
+                isVerified = true,
+                isContact = true
+            )
+            db.messengerUserDao().insertUser(aiUser)
+
             val aiConv = MessengerConversationEntity(
                 id = 1L,
                 type = "AI",
@@ -421,7 +466,7 @@ class MessengerRepository(private val db: AppDatabase) {
                     conversationId = 1L,
                     senderId = 1L,
                     senderDisplayName = "هوش مصنوعی طرحی نو",
-                    text = "«من هوش مصنوعی طرحی نو هستم؛ از رسانه هنری طرحینه مدیا.»\n\nمی‌توانید مستقیماً در این چت، با من گفتگو کنید یا در هر گروه و کانال از منوی هوش مصنوعی درخواست معمار پرامپت یا ناو استودیو داشته باشید.",
+                    text = "«من هوش مصنوعی طرحی نو هستم؛ از رسانه هنری طرحینه مدیا.»\n\nمی‌توانید مستقیماً در این چت با من گفتگو کنید، یا در هر گروه و کانال با منشن @TarhiNooAI مشاوره پرامپت دریافت کنید.",
                     messageType = "AI_RESULT",
                     isAiGenerated = true,
                     aiActionPrompt = "Cinematic Iranian architectural pavilion at golden hour, traditional turquoise tiles with volumetric sunlight, 8K render",
@@ -429,94 +474,128 @@ class MessengerRepository(private val db: AppDatabase) {
                 )
             )
 
-            // 2. Private chat with Reza Mahdavi
-            val rezaConv = MessengerConversationEntity(
-                id = 2L,
-                type = "PRIVATE",
-                title = "رضا مهدوی",
-                avatarUrl = "",
-                directUserId = 2L,
-                unreadCount = 0,
-                lastMessageText = "سلام علی جان، پرامپت پوستر محرم رو در ناو استودیو تست کردی؟",
-                lastMessageSenderName = "رضا مهدوی"
-            )
-            db.messengerConversationDao().insertConversation(rezaConv)
-            db.messengerMessageDao().insertMessage(
-                MessengerMessageEntity(
-                    conversationId = 2L,
-                    senderId = 2L,
-                    senderDisplayName = "رضا مهدوی",
-                    text = "سلام علی جان، پرامپت پوستر محرم رو در ناو استودیو تست کردی؟ کیفیت نورپردازی حجمی فوق‌العاده شده بود.",
-                    messageType = "TEXT"
+            // Only seed mock users and demo conversations in DEBUG mode
+            if (isDebug) {
+                val demoUsers = listOf(
+                    UserEntity(
+                        id = 2L,
+                        username = "reza_art",
+                        displayName = "رضا مهدوی",
+                        bio = "طراح هویت بصری و کاربر حرفه‌ای معمار پرامپت طرحی نو",
+                        isOnline = true,
+                        isVerified = true,
+                        isContact = true
+                    ),
+                    UserEntity(
+                        id = 3L,
+                        username = "sara_cinema",
+                        displayName = "سارا علوی",
+                        bio = "فیلمساز و کارگردان هوش مصنوعی - تخصص در ویدیوهای سینمایی Veo و Sora",
+                        isOnline = false,
+                        isVerified = false,
+                        isContact = true
+                    ),
+                    UserEntity(
+                        id = 4L,
+                        username = "tarhineh_studio",
+                        displayName = "استودیو طرحینه",
+                        bio = "کانون نوآوری هنر رسانه‌ای طرحینه مدیا",
+                        isOnline = true,
+                        isVerified = true,
+                        isContact = false
+                    )
                 )
-            )
+                db.messengerUserDao().insertUsers(demoUsers)
 
-            // 3. Creative Group
-            val groupConv = MessengerConversationEntity(
-                id = 3L,
-                type = "GROUP",
-                title = "انجمن طراحان هوش مصنوعی طرحینه",
-                avatarUrl = "",
-                unreadCount = 2,
-                lastMessageText = "سارا علوی: جدیدترین مقایسه فلوکس و میدجرنی رو گذاشتم",
-                lastMessageSenderName = "سارا علوی"
-            )
-            db.messengerConversationDao().insertConversation(groupConv)
-            val groupId = db.groupDao().insertGroup(
-                GroupEntity(
-                    id = 1L,
-                    conversationId = 3L,
-                    name = "انجمن طراحان هوش مصنوعی طرحینه",
-                    description = "گفتگوی تخصصی حول معمار پرامپت، ناو استودیو، موشن و نوآوری‌های هنر دیجیتال",
-                    memberCount = 38,
-                    inviteCode = "TRH-GRP-2026"
+                // 2. Private chat with Reza Mahdavi
+                val rezaConv = MessengerConversationEntity(
+                    id = 2L,
+                    type = "PRIVATE",
+                    title = "رضا مهدوی",
+                    avatarUrl = "",
+                    directUserId = 2L,
+                    unreadCount = 0,
+                    lastMessageText = "سلام علی جان، پرامپت پوستر محرم رو در ناو استودیو تست کردی؟",
+                    lastMessageSenderName = "رضا مهدوی"
                 )
-            )
-            db.groupDao().insertPermissions(GroupPermissionEntity(groupId = groupId))
-            db.messengerMessageDao().insertMessage(
-                MessengerMessageEntity(
-                    conversationId = 3L,
-                    senderId = 3L,
-                    senderDisplayName = "سارا علوی",
-                    text = "دوستان عزیز، با پرامپت معمار طرحی نو، نتیجه ویدیوی 60fps با دوربین Dolly Zoom فوق‌العاده نرم شد!",
-                    messageType = "TEXT"
+                db.messengerConversationDao().insertConversation(rezaConv)
+                db.messengerMessageDao().insertMessage(
+                    MessengerMessageEntity(
+                        conversationId = 2L,
+                        senderId = 2L,
+                        senderDisplayName = "رضا مهدوی",
+                        text = "سلام علی جان، پرامپت پوستر محرم رو در ناو استودیو تست کردی؟ کیفیت نورپردازی حجمی فوق‌العاده شده بود.",
+                        messageType = "TEXT"
+                    )
                 )
-            )
 
-            // 4. Official Channel
-            val channelConv = MessengerConversationEntity(
-                id = 4L,
-                type = "CHANNEL",
-                title = "رسانه هنری طرحینه مدیا",
-                avatarUrl = "",
-                unreadCount = 0,
-                lastMessageText = "انتشار نسخه جدید معمار پرامپت طرحی نو با پشتیبانی کامل ناو استودیو",
-                lastMessageSenderName = "طرحینه مدیا"
-            )
-            db.messengerConversationDao().insertConversation(channelConv)
-            val channelId = db.channelDao().insertChannel(
-                ChannelEntity(
-                    id = 1L,
-                    conversationId = 4L,
-                    name = "رسانه هنری طرحینه مدیا",
-                    username = "tarhineh_media",
-                    description = "کانال رسمی اطلاع‌رسانی، انتشار الگوهای خلاق و تکنیک‌های برتر هوش مصنوعی",
-                    subscriberCount = 1420,
-                    isSubscribed = true,
-                    inviteLink = "https://tarhineh.media/c/tarhineh_media"
+                // 3. Creative Group
+                val groupConv = MessengerConversationEntity(
+                    id = 3L,
+                    type = "GROUP",
+                    title = "انجمن طراحان هوش مصنوعی طرحینه",
+                    avatarUrl = "",
+                    unreadCount = 2,
+                    lastMessageText = "سارا علوی: جدیدترین مقایسه فلوکس و میدجرنی رو گذاشتم",
+                    lastMessageSenderName = "سارا علوی"
                 )
-            )
-            db.channelDao().insertPost(
-                ChannelPostEntity(
-                    channelId = channelId,
-                    authorId = 0L,
-                    authorName = "طرحینه مدیا",
-                    text = "«طرحی نو — رسانه هنری طرحینه مدیا»\n\nپیام‌رسان مستقل و یکپارچه طرحی نو راه‌اندازی شد. اکنون می‌توانید پروژه‌ها، پرامپت‌ها و لایه‌های ناو استودیو را مستقیماً با هنرمندان به اشتراک بگذارید.",
-                    promptText = "Futuristic neon Persian calligraphy floating over obsidian water, emerald glow, 8k luxury style",
-                    reactionCount = 89,
-                    viewCount = 650
+                db.messengerConversationDao().insertConversation(groupConv)
+                val groupId = db.groupDao().insertGroup(
+                    GroupEntity(
+                        id = 1L,
+                        conversationId = 3L,
+                        name = "انجمن طراحان هوش مصنوعی طرحینه",
+                        description = "گفتگوی تخصصی حول معمار پرامپت، ناو استودیو، موشن و نوآوری‌های هنر دیجیتال",
+                        memberCount = 38,
+                        inviteCode = "TRH-GRP-2026"
+                    )
                 )
-            )
+                db.groupDao().insertPermissions(GroupPermissionEntity(groupId = groupId))
+                db.messengerMessageDao().insertMessage(
+                    MessengerMessageEntity(
+                        conversationId = 3L,
+                        senderId = 3L,
+                        senderDisplayName = "سارا علوی",
+                        text = "دوستان عزیز، با پرامپت معمار طرحی نو، نتیجه ویدیوی 60fps با دوربین Dolly Zoom فوق‌العاده نرم شد!",
+                        messageType = "TEXT"
+                    )
+                )
+
+                // 4. Official Channel
+                val channelConv = MessengerConversationEntity(
+                    id = 4L,
+                    type = "CHANNEL",
+                    title = "رسانه هنری طرحینه مدیا",
+                    avatarUrl = "",
+                    unreadCount = 0,
+                    lastMessageText = "انتشار نسخه جدید معمار پرامپت طرحی نو با پشتیبانی کامل ناو استودیو",
+                    lastMessageSenderName = "طرحینه مدیا"
+                )
+                db.messengerConversationDao().insertConversation(channelConv)
+                val channelId = db.channelDao().insertChannel(
+                    ChannelEntity(
+                        id = 1L,
+                        conversationId = 4L,
+                        name = "رسانه هنری طرحینه مدیا",
+                        username = "tarhineh_media",
+                        description = "کانال رسمی اطلاع‌رسانی، انتشار الگوهای خلاق و تکنیک‌های برتر هوش مصنوعی",
+                        subscriberCount = 1420,
+                        isSubscribed = true,
+                        inviteLink = "https://tarhineh.media/c/tarhineh_media"
+                    )
+                )
+                db.channelDao().insertPost(
+                    ChannelPostEntity(
+                        channelId = channelId,
+                        authorId = 0L,
+                        authorName = "طرحینه مدیا",
+                        text = "«طرحی نو — رسانه هنری طرحینه مدیا»\n\nپیام‌رسان مستقل و یکپارچه طرحی نو راه‌اندازی شد. اکنون می‌توانید پروژه‌ها، پرامپت‌ها و لایه‌های ناو استودیو را مستقیماً با هنرمندان به اشتراک بگذارید.",
+                        promptText = "Futuristic neon Persian calligraphy floating over obsidian water, emerald glow, 8k luxury style",
+                        reactionCount = 89,
+                        viewCount = 650
+                    )
+                )
+            }
         }
     }
 }
