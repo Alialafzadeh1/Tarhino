@@ -1,5 +1,7 @@
 package com.example.data.remote.api
 
+import com.example.data.remote.model.AiChatRequest
+import com.example.data.remote.model.AiChatResponse
 import com.example.data.remote.model.ApiResponse
 import com.example.data.remote.model.AttachmentUploadRequest
 import com.example.data.remote.model.AttachmentUploadResponse
@@ -169,6 +171,10 @@ interface TarhiNooApiService {
 
     @DELETE("users/block/{userId}")
     suspend fun unblockUser(@Path("userId") userId: String): Response<ApiResponse<Unit>>
+
+    // --- AI Creative Gateway (Server-Side) ---
+    @POST("ai/chat")
+    suspend fun sendAiChat(@Body request: AiChatRequest): Response<ApiResponse<AiChatResponse>>
 
     // --- System Health ---
     @GET("health")

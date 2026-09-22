@@ -28,6 +28,7 @@ router.get('/health', async (_req: Request, res: Response) => {
   const wsOk = realtimeServerInstance !== null && realtimeServerInstance.isHealthy();
   const storageOk = uploadsService.isConfigured();
   const aiOk = aiGateway.isConfigured();
+  const notificationOk = notificationService.isConfigured();
 
   const allGood = dbOk;
 
@@ -41,6 +42,7 @@ router.get('/health', async (_req: Request, res: Response) => {
       realtime: wsOk ? 'CONNECTED' : 'DISCONNECTED',
       storage: storageOk ? 'CONNECTED' : 'LOCAL_OR_UNCONFIGURED',
       ai: aiOk ? 'CONNECTED' : 'UNCONFIGURED',
+      notifications: notificationOk ? 'CONNECTED' : 'UNCONFIGURED',
     },
   });
 });
@@ -1117,6 +1119,61 @@ router.delete('/users/block/:userId', authenticateToken, async (req: AuthRequest
     where: { userId: req.user!.id, blockedUserId: req.params.userId },
   });
   res.json({ success: true });
+});
+
+// ==========================================
+// 12. AI GATEWAY (SERVER-SIDE ONLY)
+// ==========================================
+const MAX_AI_PROMPT_LENGTH = 20000;
+
+router.post('/ai/chat', authenticateToken, aiLimiter, async (req: AuthRequest, res: Response) => {
+  try {
+    const { prompt, context, targetModule } = req.body;
+
+    if (!prompt || typeof prompt !== 'string' || prompt.trim().length === 0) {
+      return res.status(400).json({
+        success: false,
+        error: { code: 'AI_INVALID_PROMPT', message: 'متن درخواست هوش مصنوعی نمی‌تواند خالی باشد.' },
+      });
+    }
+
+    if (prompt.length > MAX_AI_PROMPT_LENGTH) {
+      return res.status(400).json({
+        success: false,
+        error: { code: 'AI_PROMPT_TOO_LARGE', message: 'طول درخواست بیش از حد مجاز (حداکثر ۲۰٬۰۰۰ کاراکتر) است.' },
+      });
+    }
+
+    const aiResult = await aiGateway.processAIMessage(
+      prompt,
+      targetModule as ('PROMPT_BUILDER' | 'NAVA_STUDIO' | 'CREATIVE_AGENT' | undefined),
+      typeof context === 'string' ? context : undefined
+    );
+
+    res.json({
+      success: true,
+      data: {
+        text: aiResult.text,
+        actionPrompt: aiResult.actionPrompt,
+        targetModule: aiResult.targetModule,
+        provider: aiResult.provider,
+      },
+    });
+  } catch (err: any) {
+    const isUnavailable = err.message?.includes('AI_PROVIDER_UNAVAILABLE') || err.message?.includes('GEMINI_API_KEY');
+    const errorCode = isUnavailable ? 'AI_PROVIDER_UNAVAILABLE' : 'AI_PROCESSING_ERROR';
+    const errorMessage = isUnavailable
+      ? 'سرویس هوش مصنوعی موقتاً در دسترس نیست.'
+      : 'خطایی در پردازش هوش مصنوعی رخ داد.';
+
+    res.status(503).json({
+      success: false,
+      error: {
+        code: errorCode,
+        message: errorMessage,
+      },
+    });
+  }
 });
 
 export default router;

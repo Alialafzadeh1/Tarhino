@@ -123,6 +123,10 @@ export class NotificationService {
       console.error('[NotificationService] Failed to send multicast FCM:', err);
     }
   }
+
+  isConfigured(): boolean {
+    return this.fcmApp !== null;
+  }
 }
 
 export const notificationService = new NotificationService();

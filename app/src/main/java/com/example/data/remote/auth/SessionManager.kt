@@ -5,6 +5,7 @@ import android.content.SharedPreferences
 import android.security.keystore.KeyGenParameterSpec
 import android.security.keystore.KeyProperties
 import android.util.Base64
+import com.example.BuildConfig
 import com.example.data.remote.model.UserDto
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -99,11 +100,20 @@ class SessionManager(context: Context) {
                 val encBase64 = Base64.encodeToString(encryptedBytes, Base64.NO_WRAP)
                 "$ivBase64$IV_SEPARATOR$encBase64"
             } else {
-                // Obfuscated fallback for test environments without AndroidKeyStore
-                "raw:" + Base64.encodeToString(plainText.toByteArray(Charsets.UTF_8), Base64.NO_WRAP)
+                // Non-standard JVM test runner fallback ONLY in DEBUG
+                if (BuildConfig.DEBUG) {
+                    "raw:" + Base64.encodeToString(plainText.toByteArray(Charsets.UTF_8), Base64.NO_WRAP)
+                } else {
+                    // RELEASE: Keystore failure is fatal — never store unencrypted or raw tokens
+                    null
+                }
             }
         } catch (_: Exception) {
-            "raw:" + Base64.encodeToString(plainText.toByteArray(Charsets.UTF_8), Base64.NO_WRAP)
+            if (BuildConfig.DEBUG) {
+                "raw:" + Base64.encodeToString(plainText.toByteArray(Charsets.UTF_8), Base64.NO_WRAP)
+            } else {
+                null
+            }
         }
     }
 
@@ -111,8 +121,13 @@ class SessionManager(context: Context) {
         if (encryptedString.isNullOrEmpty()) return null
         return try {
             if (encryptedString.startsWith("raw:")) {
-                val base64 = encryptedString.removePrefix("raw:")
-                String(Base64.decode(base64, Base64.NO_WRAP), Charsets.UTF_8)
+                if (BuildConfig.DEBUG) {
+                    val base64 = encryptedString.removePrefix("raw:")
+                    String(Base64.decode(base64, Base64.NO_WRAP), Charsets.UTF_8)
+                } else {
+                    // In RELEASE, reject raw fallback tokens
+                    null
+                }
             } else if (encryptedString.contains(IV_SEPARATOR)) {
                 val parts = encryptedString.split(IV_SEPARATOR)
                 val iv = Base64.decode(parts[0], Base64.NO_WRAP)
@@ -126,8 +141,8 @@ class SessionManager(context: Context) {
                     null
                 }
             } else {
-                // Legacy unencrypted token migration
-                encryptedString
+                // Legacy unencrypted token migration allowed ONLY in DEBUG
+                if (BuildConfig.DEBUG) encryptedString else null
             }
         } catch (_: Exception) {
             null
@@ -166,6 +181,13 @@ class SessionManager(context: Context) {
         val expiresAt = System.currentTimeMillis() + (expiresInSeconds * 1000)
         val encryptedAccessToken = encryptToken(accessToken)
         val encryptedRefreshToken = encryptToken(refreshToken)
+
+        // If encryption failed (e.g. in Release build Keystore fault), fail securely
+        if (encryptedAccessToken.isNullOrBlank() || encryptedRefreshToken.isNullOrBlank()) {
+            clearSession()
+            setAuthError("SECURE_STORAGE_ERROR", "عدم امکان ذخیره‌سازی امن توکن در Keystore دستگاه.")
+            return
+        }
 
         prefs.edit()
             .putString(KEY_ACCESS_TOKEN_ENC, encryptedAccessToken)

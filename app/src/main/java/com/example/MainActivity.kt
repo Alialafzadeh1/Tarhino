@@ -103,7 +103,7 @@ fun TarhiNooApp() {
         val db = AppDatabase.getDatabase(context)
         AuthRepository(apiService, sessionManager, db)
     }
-    val geminiService = remember { GeminiService() }
+    val geminiService = remember { GeminiService(apiService) }
     val messengerViewModel = remember {
         MessengerViewModel(messengerRepository, realtimeManager, syncManager, geminiService)
     }

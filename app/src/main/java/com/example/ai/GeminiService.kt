@@ -1,88 +1,63 @@
 package com.example.ai
 
 import android.util.Log
-import com.example.BuildConfig
+import com.example.data.remote.api.TarhiNooApiService
+import com.example.data.remote.model.AiChatRequest
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
-import okhttp3.MediaType.Companion.toMediaType
-import okhttp3.OkHttpClient
-import okhttp3.Request
-import okhttp3.RequestBody.Companion.toRequestBody
-import org.json.JSONArray
-import org.json.JSONObject
-import java.util.concurrent.TimeUnit
 
-class GeminiService {
-
-    private val client = OkHttpClient.Builder()
-        .connectTimeout(45, TimeUnit.SECONDS)
-        .readTimeout(45, TimeUnit.SECONDS)
-        .writeTimeout(45, TimeUnit.SECONDS)
-        .build()
+/**
+ * Tarhi Noo Server-Side AI Gateway Client.
+ *
+ * Direct calls from Android to generativelanguage.googleapis.com and BuildConfig.GEMINI_API_KEY
+ * have been completely removed.
+ *
+ * All AI generation requests route securely through the Tarhi Noo Backend (/ai/chat)
+ * where authentication, rate-limiting, and the Gemini API key reside exclusively.
+ *
+ * In local/offline mode or if the backend is not yet configured, the service provides
+ * contextual fallback generation without crashing or leaking credentials.
+ */
+class GeminiService(
+    private val apiService: TarhiNooApiService? = null
+) {
 
     suspend fun generateCreativeResponse(
         userPrompt: String,
         systemInstruction: String = "You are Tarhi Noo AI (هوش مصنوعی طرحی نو), from Tarhineh Media (رسانه هنری طرحینه مدیا). You are a futuristic, highly sophisticated, Iranian-first AI creative assistant. Introduce yourself warmly when appropriate as «من هوش مصنوعی طرحی نو هستم؛ از رسانه هنری طرحینه مدیا». Provide brilliant, professional, high-level creative direction, prompt engineering, and design advice in fluent Persian or English as requested."
     ): String = withContext(Dispatchers.IO) {
-        val apiKey = try {
-            BuildConfig.GEMINI_API_KEY
-        } catch (e: Exception) {
-            ""
-        }
-
-        // If a real API key is configured and not default placeholder, call Gemini REST API
-        if (!apiKey.isNullOrBlank() && apiKey != "MY_GEMINI_API_KEY") {
+        // 1. If backend API service is available, route securely through backend gateway
+        if (apiService != null) {
             try {
-                val url = "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=$apiKey"
-                val jsonPayload = JSONObject().apply {
-                    put("contents", JSONArray().apply {
-                        put(JSONObject().apply {
-                            put("role", "user")
-                            put("parts", JSONArray().apply {
-                                put(JSONObject().put("text", userPrompt))
-                            })
-                        })
-                    })
-                    put("systemInstruction", JSONObject().apply {
-                        put("parts", JSONArray().apply {
-                            put(JSONObject().put("text", systemInstruction))
-                        })
-                    })
-                    put("generationConfig", JSONObject().apply {
-                        put("temperature", 0.7)
-                        put("topP", 0.95)
-                    })
+                val targetModule = if (userPrompt.contains("موسیقی") || userPrompt.contains("صوت") || userPrompt.contains("audio") || userPrompt.contains("music")) {
+                    "NAVA_STUDIO"
+                } else {
+                    "PROMPT_BUILDER"
                 }
 
-                val request = Request.Builder()
-                    .url(url)
-                    .post(jsonPayload.toString().toRequestBody("application/json".toMediaType()))
-                    .build()
+                val response = apiService.sendAiChat(
+                    AiChatRequest(
+                        prompt = userPrompt,
+                        context = systemInstruction,
+                        targetModule = targetModule
+                    )
+                )
 
-                val response = client.newCall(request).execute()
-                val body = response.body?.string()
-                if (response.isSuccessful && !body.isNullOrBlank()) {
-                    val root = JSONObject(body)
-                    val candidates = root.optJSONArray("candidates")
-                    if (candidates != null && candidates.length() > 0) {
-                        val content = candidates.getJSONObject(0).optJSONObject("content")
-                        val parts = content?.optJSONArray("parts")
-                        if (parts != null && parts.length() > 0) {
-                            val text = parts.getJSONObject(0).optString("text")
-                            if (text.isNotBlank()) {
-                                return@withContext text
-                            }
-                        }
+                if (response.isSuccessful) {
+                    val apiResp = response.body()
+                    val text = apiResp?.data?.text
+                    if (!text.isNullOrBlank()) {
+                        return@withContext text
                     }
                 } else {
-                    Log.w("GeminiService", "API call response not successful: ${response.code} $body")
+                    Log.w("GeminiService", "Backend AI Gateway returned status: ${response.code()}")
                 }
             } catch (e: Exception) {
-                Log.w("GeminiService", "Exception calling Gemini API, using intelligent fallback", e)
+                Log.w("GeminiService", "Network error reaching backend AI gateway", e)
             }
         }
 
-        // Contextual AI Creative Intelligence Engine Fallback
+        // 2. Safe contextual fallback for offline development or when backend is unconfigured
         generateSmartLocalCreativeResponse(userPrompt)
     }
 

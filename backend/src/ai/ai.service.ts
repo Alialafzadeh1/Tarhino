@@ -124,21 +124,27 @@ You provide expert creative direction, prompt engineering, cinematic visual conc
     }
   }
 
-  async processAIMessage(userText: string): Promise<{
+  async processAIMessage(userText: string, requestedTargetModule?: 'PROMPT_BUILDER' | 'NAVA_STUDIO' | 'CREATIVE_AGENT', context?: string): Promise<{
     text: string;
     actionPrompt: string;
     targetModule: 'PROMPT_BUILDER' | 'NAVA_STUDIO' | 'CREATIVE_AGENT';
+    provider: string;
   }> {
     const cleanPrompt = userText.replace(/@TarhiNooAI/gi, '').trim();
     const isAudio = /موسیقی|صدا|آهنگ|audio|music|sound/i.test(cleanPrompt);
-    const targetModule = isAudio ? 'NAVA_STUDIO' : 'PROMPT_BUILDER';
+    const targetModule = requestedTargetModule || (isAudio ? 'NAVA_STUDIO' : 'PROMPT_BUILDER');
 
-    const response = await this.provider.generateResponse(cleanPrompt, this.systemInstruction);
+    const promptWithContext = context && context.trim().length > 0
+      ? `Context: ${context.trim()}\n\nUser Request: ${cleanPrompt}`
+      : cleanPrompt;
+
+    const response = await this.provider.generateResponse(promptWithContext, this.systemInstruction);
 
     return {
       text: response,
       actionPrompt: cleanPrompt || 'Cinematic Iranian luxury design, 8k render, golden hour',
       targetModule,
+      provider: this.provider.name,
     };
   }
 

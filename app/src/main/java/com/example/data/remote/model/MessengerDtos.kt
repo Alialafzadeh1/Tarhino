@@ -138,3 +138,18 @@ data class ReportDto(
     @Json(name = "timestamp") val timestamp: Long = System.currentTimeMillis(),
     @Json(name = "status") val status: String = "OPEN"
 )
+
+@JsonClass(generateAdapter = true)
+data class AiChatRequest(
+    @Json(name = "prompt") val prompt: String,
+    @Json(name = "context") val context: String? = null,
+    @Json(name = "targetModule") val targetModule: String? = null
+)
+
+@JsonClass(generateAdapter = true)
+data class AiChatResponse(
+    @Json(name = "text") val text: String,
+    @Json(name = "actionPrompt") val actionPrompt: String = "",
+    @Json(name = "targetModule") val targetModule: String = "PROMPT_BUILDER",
+    @Json(name = "provider") val provider: String = "gemini"
+)
