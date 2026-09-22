@@ -64,7 +64,7 @@ import androidx.sqlite.db.SupportSQLiteDatabase
         BlockedUserEntity::class,
         ReportEntity::class
     ],
-    version = 3,
+    version = 4,
     exportSchema = false
 )
 abstract class AppDatabase : RoomDatabase() {
@@ -305,13 +305,339 @@ abstract class AppDatabase : RoomDatabase() {
             }
         }
 
+        val MIGRATION_3_4 = object : Migration(3, 4) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                // 1. users: id -> TEXT PRIMARY KEY NOT NULL
+                db.execSQL("""
+                    CREATE TABLE IF NOT EXISTS users_v4 (
+                        id TEXT PRIMARY KEY NOT NULL,
+                        username TEXT NOT NULL,
+                        displayName TEXT NOT NULL,
+                        avatarUrl TEXT NOT NULL,
+                        bio TEXT NOT NULL,
+                        isOnline INTEGER NOT NULL,
+                        lastSeen INTEGER NOT NULL,
+                        isVerified INTEGER NOT NULL,
+                        isBlocked INTEGER NOT NULL,
+                        isContact INTEGER NOT NULL,
+                        createdAt INTEGER NOT NULL,
+                        updatedAt INTEGER NOT NULL
+                    )
+                """.trimIndent())
+                db.execSQL("""
+                    INSERT INTO users_v4 SELECT 
+                        CAST(id AS TEXT), username, displayName, avatarUrl, bio, 
+                        isOnline, lastSeen, isVerified, isBlocked, isContact, createdAt, updatedAt 
+                    FROM users
+                """.trimIndent())
+                db.execSQL("DROP TABLE users")
+                db.execSQL("ALTER TABLE users_v4 RENAME TO users")
+                db.execSQL("CREATE UNIQUE INDEX IF NOT EXISTS index_users_username ON users(username)")
+
+                // 2. messenger_conversations: id -> TEXT PRIMARY KEY NOT NULL, directUserId -> TEXT
+                db.execSQL("""
+                    CREATE TABLE IF NOT EXISTS messenger_conversations_v4 (
+                        id TEXT PRIMARY KEY NOT NULL,
+                        type TEXT NOT NULL,
+                        title TEXT NOT NULL,
+                        avatarUrl TEXT NOT NULL,
+                        description TEXT NOT NULL,
+                        directUserId TEXT,
+                        isPinned INTEGER NOT NULL,
+                        isMuted INTEGER NOT NULL,
+                        isArchived INTEGER NOT NULL,
+                        unreadCount INTEGER NOT NULL,
+                        lastMessageText TEXT NOT NULL,
+                        lastMessageSenderName TEXT NOT NULL,
+                        lastMessageTimestamp INTEGER NOT NULL,
+                        createdAt INTEGER NOT NULL,
+                        updatedAt INTEGER NOT NULL
+                    )
+                """.trimIndent())
+                db.execSQL("""
+                    INSERT INTO messenger_conversations_v4 SELECT 
+                        CAST(id AS TEXT), type, title, avatarUrl, description, 
+                        CASE WHEN directUserId IS NOT NULL THEN CAST(directUserId AS TEXT) ELSE NULL END,
+                        isPinned, isMuted, isArchived, unreadCount, lastMessageText, lastMessageSenderName, 
+                        lastMessageTimestamp, createdAt, updatedAt 
+                    FROM messenger_conversations
+                """.trimIndent())
+                db.execSQL("DROP TABLE messenger_conversations")
+                db.execSQL("ALTER TABLE messenger_conversations_v4 RENAME TO messenger_conversations")
+                db.execSQL("CREATE INDEX IF NOT EXISTS index_messenger_conversations_type ON messenger_conversations(type)")
+                db.execSQL("CREATE INDEX IF NOT EXISTS index_messenger_conversations_updatedAt ON messenger_conversations(updatedAt)")
+
+                // 3. messenger_messages: conversationId -> TEXT, senderId -> TEXT, replyToMessageId -> TEXT, forwardedFromMessageId -> TEXT
+                db.execSQL("""
+                    CREATE TABLE IF NOT EXISTS messenger_messages_v4 (
+                        id INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL,
+                        conversationId TEXT NOT NULL,
+                        senderId TEXT NOT NULL,
+                        senderDisplayName TEXT NOT NULL,
+                        text TEXT NOT NULL,
+                        messageType TEXT NOT NULL,
+                        deliveryStatus TEXT NOT NULL,
+                        serverId TEXT,
+                        clientRequestId TEXT,
+                        replyToMessageId TEXT,
+                        replyToText TEXT,
+                        replyToSenderName TEXT,
+                        forwardedFromMessageId TEXT,
+                        forwardedFromSenderName TEXT,
+                        isPinned INTEGER NOT NULL,
+                        isAiGenerated INTEGER NOT NULL,
+                        aiActionPrompt TEXT,
+                        aiTargetModule TEXT,
+                        readAt INTEGER,
+                        editedAt INTEGER,
+                        deletedAt INTEGER,
+                        createdAt INTEGER NOT NULL
+                    )
+                """.trimIndent())
+                db.execSQL("""
+                    INSERT INTO messenger_messages_v4 SELECT 
+                        id, CAST(conversationId AS TEXT), CAST(senderId AS TEXT), senderDisplayName, text, 
+                        messageType, deliveryStatus, serverId, clientRequestId, 
+                        CASE WHEN replyToMessageId IS NOT NULL THEN CAST(replyToMessageId AS TEXT) ELSE NULL END,
+                        replyToText, replyToSenderName, 
+                        CASE WHEN forwardedFromMessageId IS NOT NULL THEN CAST(forwardedFromMessageId AS TEXT) ELSE NULL END,
+                        forwardedFromSenderName, isPinned, isAiGenerated, aiActionPrompt, aiTargetModule, 
+                        readAt, editedAt, deletedAt, createdAt 
+                    FROM messenger_messages
+                """.trimIndent())
+                db.execSQL("DROP TABLE messenger_messages")
+                db.execSQL("ALTER TABLE messenger_messages_v4 RENAME TO messenger_messages")
+                db.execSQL("CREATE INDEX IF NOT EXISTS index_messenger_messages_conversationId ON messenger_messages(conversationId)")
+                db.execSQL("CREATE INDEX IF NOT EXISTS index_messenger_messages_createdAt ON messenger_messages(createdAt)")
+                db.execSQL("CREATE INDEX IF NOT EXISTS index_messenger_messages_clientRequestId ON messenger_messages(clientRequestId)")
+                db.execSQL("CREATE INDEX IF NOT EXISTS index_messenger_messages_serverId ON messenger_messages(serverId)")
+
+                // 4. conversation_members: conversationId -> TEXT, userId -> TEXT, lastReadMessageId -> TEXT
+                db.execSQL("""
+                    CREATE TABLE IF NOT EXISTS conversation_members_v4 (
+                        id INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL,
+                        conversationId TEXT NOT NULL,
+                        userId TEXT NOT NULL,
+                        role TEXT NOT NULL,
+                        joinedAt INTEGER NOT NULL,
+                        lastReadMessageId TEXT NOT NULL,
+                        notificationsEnabled INTEGER NOT NULL
+                    )
+                """.trimIndent())
+                db.execSQL("""
+                    INSERT INTO conversation_members_v4 SELECT 
+                        id, CAST(conversationId AS TEXT), CAST(userId AS TEXT), role, joinedAt, 
+                        CAST(lastReadMessageId AS TEXT), notificationsEnabled 
+                    FROM conversation_members
+                """.trimIndent())
+                db.execSQL("DROP TABLE conversation_members")
+                db.execSQL("ALTER TABLE conversation_members_v4 RENAME TO conversation_members")
+                db.execSQL("CREATE UNIQUE INDEX IF NOT EXISTS index_conversation_members_conversationId_userId ON conversation_members(conversationId, userId)")
+
+                // 5. groups: id -> TEXT PRIMARY KEY NOT NULL, conversationId -> TEXT, ownerId -> TEXT
+                db.execSQL("""
+                    CREATE TABLE IF NOT EXISTS groups_v4 (
+                        id TEXT PRIMARY KEY NOT NULL,
+                        conversationId TEXT NOT NULL,
+                        name TEXT NOT NULL,
+                        description TEXT NOT NULL,
+                        avatarUrl TEXT NOT NULL,
+                        ownerId TEXT NOT NULL,
+                        isPrivate INTEGER NOT NULL,
+                        inviteCode TEXT NOT NULL,
+                        memberCount INTEGER NOT NULL,
+                        createdAt INTEGER NOT NULL
+                    )
+                """.trimIndent())
+                db.execSQL("""
+                    INSERT INTO groups_v4 SELECT 
+                        CAST(id AS TEXT), CAST(conversationId AS TEXT), name, description, avatarUrl, 
+                        CAST(ownerId AS TEXT), isPrivate, inviteCode, memberCount, createdAt 
+                    FROM groups
+                """.trimIndent())
+                db.execSQL("DROP TABLE groups")
+                db.execSQL("ALTER TABLE groups_v4 RENAME TO groups")
+                db.execSQL("CREATE INDEX IF NOT EXISTS index_groups_conversationId ON groups(conversationId)")
+
+                // 6. group_permissions: id -> TEXT PRIMARY KEY NOT NULL, groupId -> TEXT
+                db.execSQL("""
+                    CREATE TABLE IF NOT EXISTS group_permissions_v4 (
+                        id TEXT PRIMARY KEY NOT NULL,
+                        groupId TEXT NOT NULL,
+                        sendMessages INTEGER NOT NULL,
+                        sendMedia INTEGER NOT NULL,
+                        addMembers INTEGER NOT NULL,
+                        removeMembers INTEGER NOT NULL,
+                        pinMessages INTEGER NOT NULL,
+                        editGroup INTEGER NOT NULL,
+                        deleteMessages INTEGER NOT NULL,
+                        manageAdmins INTEGER NOT NULL,
+                        manageMembers INTEGER NOT NULL
+                    )
+                """.trimIndent())
+                db.execSQL("""
+                    INSERT INTO group_permissions_v4 SELECT 
+                        CAST(id AS TEXT), CAST(groupId AS TEXT), sendMessages, sendMedia, addMembers, 
+                        removeMembers, pinMessages, editGroup, deleteMessages, manageAdmins, manageMembers 
+                    FROM group_permissions
+                """.trimIndent())
+                db.execSQL("DROP TABLE group_permissions")
+                db.execSQL("ALTER TABLE group_permissions_v4 RENAME TO group_permissions")
+                db.execSQL("CREATE UNIQUE INDEX IF NOT EXISTS index_group_permissions_groupId ON group_permissions(groupId)")
+
+                // 7. channels: id -> TEXT PRIMARY KEY NOT NULL, conversationId -> TEXT, ownerId -> TEXT
+                db.execSQL("""
+                    CREATE TABLE IF NOT EXISTS channels_v4 (
+                        id TEXT PRIMARY KEY NOT NULL,
+                        conversationId TEXT NOT NULL,
+                        name TEXT NOT NULL,
+                        username TEXT NOT NULL,
+                        description TEXT NOT NULL,
+                        avatarUrl TEXT NOT NULL,
+                        coverUrl TEXT NOT NULL,
+                        ownerId TEXT NOT NULL,
+                        subscriberCount INTEGER NOT NULL,
+                        isPublic INTEGER NOT NULL,
+                        inviteLink TEXT NOT NULL,
+                        isSubscribed INTEGER NOT NULL,
+                        isMuted INTEGER NOT NULL,
+                        createdAt INTEGER NOT NULL
+                    )
+                """.trimIndent())
+                db.execSQL("""
+                    INSERT INTO channels_v4 SELECT 
+                        CAST(id AS TEXT), CAST(conversationId AS TEXT), name, username, description, 
+                        avatarUrl, coverUrl, CAST(ownerId AS TEXT), subscriberCount, isPublic, inviteLink, 
+                        isSubscribed, isMuted, createdAt 
+                    FROM channels
+                """.trimIndent())
+                db.execSQL("DROP TABLE channels")
+                db.execSQL("ALTER TABLE channels_v4 RENAME TO channels")
+                db.execSQL("CREATE INDEX IF NOT EXISTS index_channels_conversationId ON channels(conversationId)")
+                db.execSQL("CREATE UNIQUE INDEX IF NOT EXISTS index_channels_username ON channels(username)")
+
+                // 8. channel_posts: id -> TEXT PRIMARY KEY NOT NULL, channelId -> TEXT, authorId -> TEXT
+                db.execSQL("""
+                    CREATE TABLE IF NOT EXISTS channel_posts_v4 (
+                        id TEXT PRIMARY KEY NOT NULL,
+                        channelId TEXT NOT NULL,
+                        authorId TEXT NOT NULL,
+                        authorName TEXT NOT NULL,
+                        text TEXT NOT NULL,
+                        mediaUrl TEXT NOT NULL,
+                        mediaType TEXT NOT NULL,
+                        promptText TEXT NOT NULL,
+                        viewCount INTEGER NOT NULL,
+                        reactionCount INTEGER NOT NULL,
+                        isPinned INTEGER NOT NULL,
+                        editedAt INTEGER,
+                        createdAt INTEGER NOT NULL
+                    )
+                """.trimIndent())
+                db.execSQL("""
+                    INSERT INTO channel_posts_v4 SELECT 
+                        CAST(id AS TEXT), CAST(channelId AS TEXT), CAST(authorId AS TEXT), authorName, 
+                        text, mediaUrl, mediaType, promptText, viewCount, reactionCount, isPinned, 
+                        editedAt, createdAt 
+                    FROM channel_posts
+                """.trimIndent())
+                db.execSQL("DROP TABLE channel_posts")
+                db.execSQL("ALTER TABLE channel_posts_v4 RENAME TO channel_posts")
+                db.execSQL("CREATE INDEX IF NOT EXISTS index_channel_posts_channelId ON channel_posts(channelId)")
+
+                // 9. message_reactions: messageId -> TEXT, userId -> TEXT
+                db.execSQL("""
+                    CREATE TABLE IF NOT EXISTS message_reactions_v4 (
+                        id INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL,
+                        messageId TEXT NOT NULL,
+                        userId TEXT NOT NULL,
+                        reaction TEXT NOT NULL,
+                        timestamp INTEGER NOT NULL
+                    )
+                """.trimIndent())
+                db.execSQL("""
+                    INSERT INTO message_reactions_v4 SELECT 
+                        id, CAST(messageId AS TEXT), CAST(userId AS TEXT), reaction, timestamp 
+                    FROM message_reactions
+                """.trimIndent())
+                db.execSQL("DROP TABLE message_reactions")
+                db.execSQL("ALTER TABLE message_reactions_v4 RENAME TO message_reactions")
+                db.execSQL("CREATE UNIQUE INDEX IF NOT EXISTS index_message_reactions_messageId_userId_reaction ON message_reactions(messageId, userId, reaction)")
+
+                // 10. message_attachments: messageId -> TEXT
+                db.execSQL("""
+                    CREATE TABLE IF NOT EXISTS message_attachments_v4 (
+                        id INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL,
+                        messageId TEXT NOT NULL,
+                        type TEXT NOT NULL,
+                        localUri TEXT NOT NULL,
+                        remoteUrl TEXT NOT NULL,
+                        fileName TEXT NOT NULL,
+                        mimeType TEXT NOT NULL,
+                        sizeBytes INTEGER NOT NULL,
+                        thumbnailUrl TEXT NOT NULL,
+                        createdAt INTEGER NOT NULL
+                    )
+                """.trimIndent())
+                db.execSQL("""
+                    INSERT INTO message_attachments_v4 SELECT 
+                        id, CAST(messageId AS TEXT), type, localUri, remoteUrl, fileName, 
+                        mimeType, sizeBytes, thumbnailUrl, createdAt 
+                    FROM message_attachments
+                """.trimIndent())
+                db.execSQL("DROP TABLE message_attachments")
+                db.execSQL("ALTER TABLE message_attachments_v4 RENAME TO message_attachments")
+                db.execSQL("CREATE INDEX IF NOT EXISTS index_message_attachments_messageId ON message_attachments(messageId)")
+
+                // 11. blocked_users: userId -> TEXT
+                db.execSQL("""
+                    CREATE TABLE IF NOT EXISTS blocked_users_v4 (
+                        id INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL,
+                        userId TEXT NOT NULL,
+                        blockedAt INTEGER NOT NULL,
+                        reason TEXT NOT NULL
+                    )
+                """.trimIndent())
+                db.execSQL("""
+                    INSERT INTO blocked_users_v4 SELECT 
+                        id, CAST(userId AS TEXT), blockedAt, reason 
+                    FROM blocked_users
+                """.trimIndent())
+                db.execSQL("DROP TABLE blocked_users")
+                db.execSQL("ALTER TABLE blocked_users_v4 RENAME TO blocked_users")
+                db.execSQL("CREATE UNIQUE INDEX IF NOT EXISTS index_blocked_users_userId ON blocked_users(userId)")
+
+                // 12. reports: targetId -> TEXT, reportedByUserId -> TEXT
+                db.execSQL("""
+                    CREATE TABLE IF NOT EXISTS reports_v4 (
+                        id INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL,
+                        targetType TEXT NOT NULL,
+                        targetId TEXT NOT NULL,
+                        reasonCategory TEXT NOT NULL,
+                        details TEXT NOT NULL,
+                        reportedByUserId TEXT NOT NULL,
+                        timestamp INTEGER NOT NULL,
+                        status TEXT NOT NULL
+                    )
+                """.trimIndent())
+                db.execSQL("""
+                    INSERT INTO reports_v4 SELECT 
+                        id, targetType, CAST(targetId AS TEXT), reasonCategory, details, 
+                        CAST(reportedByUserId AS TEXT), timestamp, status 
+                    FROM reports
+                """.trimIndent())
+                db.execSQL("DROP TABLE reports")
+                db.execSQL("ALTER TABLE reports_v4 RENAME TO reports")
+            }
+        }
+
         fun getDatabase(context: Context): AppDatabase {
             return INSTANCE ?: synchronized(this) {
                 val instance = Room.databaseBuilder(
                     context.applicationContext,
                     AppDatabase::class.java,
                     "tarhi_noo_database.db"
-                ).addMigrations(MIGRATION_1_2, MIGRATION_2_3)
+                ).addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4)
                  .build()
                 INSTANCE = instance
                 instance

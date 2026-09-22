@@ -9,6 +9,7 @@ interface AuthenticatedSocket extends WebSocket {
   isAlive?: boolean;
   subscriptions?: Set<string>;
   lastTypingTimestamp?: number;
+  authTimeoutTimer?: NodeJS.Timeout;
 }
 
 export class RealtimeServer {
@@ -26,21 +27,25 @@ export class RealtimeServer {
   }
 
   private init() {
-    this.wss.on('connection', (ws: AuthenticatedSocket, req) => {
+    this.wss.on('connection', async (ws: AuthenticatedSocket, req) => {
       ws.isAlive = true;
       ws.subscriptions = new Set<string>();
 
-      // Strict WebSocket Security: Authenticate only via Bearer JWT (header or ?token= URL query)
-      const url = new URL(req.url || '', `http://${req.headers.host || 'localhost'}`);
-      const rawToken = url.searchParams.get('token') || (req.headers['authorization'] || '').replace(/^Bearer\s+/i, '');
+      // Strict WebSocket Security: Authenticate via Authorization Bearer header only.
+      // URL query param (?token=) is deliberately NOT accepted in accordance with security specifications.
+      const authHeader = req.headers['authorization'] || '';
+      const rawToken = authHeader.replace(/^Bearer\s+/i, '').trim();
 
       let authenticatedUserId: string | null = null;
       if (rawToken) {
         try {
           const payload = jwt.verify(rawToken, env.JWT_SECRET) as { userId: string };
-          authenticatedUserId = payload.userId;
+          const user = await prisma.user.findUnique({ where: { id: payload.userId } });
+          if (user) {
+            authenticatedUserId = user.id;
+          }
         } catch {
-          // Token invalid
+          // Token invalid or expired
         }
       }
 
@@ -48,6 +53,18 @@ export class RealtimeServer {
       if (authenticatedUserId) {
         this.registerClient(authenticatedUserId, ws);
         ws.send(JSON.stringify({ type: 'CONNECTED', userId: authenticatedUserId }));
+      } else {
+        // Enforce 10-second authentication window for unauthenticated sockets
+        ws.authTimeoutTimer = setTimeout(() => {
+          if (!ws.userId && ws.readyState === WebSocket.OPEN) {
+            ws.send(JSON.stringify({
+              type: 'ERROR',
+              code: 'AUTH_TIMEOUT',
+              message: 'Authentication timeout (10s) — socket closed',
+            }));
+            ws.close(4001, 'Unauthorized');
+          }
+        }, 10000);
       }
 
       ws.on('pong', () => {
@@ -68,6 +85,9 @@ export class RealtimeServer {
       });
 
       ws.on('close', () => {
+        if (ws.authTimeoutTimer) {
+          clearTimeout(ws.authTimeoutTimer);
+        }
         if (ws.userId) {
           this.unregisterClient(ws.userId, ws);
         }
@@ -149,6 +169,10 @@ export class RealtimeServer {
             ws.send(JSON.stringify({ type: 'AUTH_EXPIRED', message: 'کاربر یافت نشد' }));
             ws.close(4001, 'Unauthorized');
             return;
+          }
+          if (ws.authTimeoutTimer) {
+            clearTimeout(ws.authTimeoutTimer);
+            ws.authTimeoutTimer = undefined;
           }
           this.registerClient(payload.userId, ws);
           ws.send(JSON.stringify({ type: 'CONNECTED', userId: payload.userId }));
@@ -318,6 +342,20 @@ export class RealtimeServer {
         client.send(data);
       }
     });
+  }
+
+  public disconnectUser(userId: string) {
+    const userSockets = this.clients.get(userId);
+    if (userSockets) {
+      userSockets.forEach((ws) => {
+        try {
+          ws.send(JSON.stringify({ type: 'DISCONNECTED', reason: 'LOGGED_OUT' }));
+          ws.close(1000, 'Logged out');
+        } catch {}
+      });
+      this.clients.delete(userId);
+      this.broadcastPresence(userId, false);
+    }
   }
 
   public close() {

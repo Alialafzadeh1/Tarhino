@@ -99,15 +99,15 @@ fun PrivateChatScreen(
     conversation: MessengerConversationEntity?,
     messages: List<MessengerMessageEntity>,
     onBack: () -> Unit,
-    onSendMessage: (text: String, replyToId: Long?, replyToText: String?, replyToSender: String?) -> Unit,
+    onSendMessage: (text: String, replyToId: String?, replyToText: String?, replyToSender: String?) -> Unit,
     onForwardMessage: (MessengerMessageEntity) -> Unit,
     onEditMessage: (Long, String) -> Unit,
     onDeleteMessage: (Long) -> Unit,
     onPinMessage: (Long, Boolean) -> Unit,
-    onReaction: (Long, String) -> Unit,
+    onReaction: (String, String) -> Unit,
     onOpenPromptBuilder: (String) -> Unit,
     onOpenNavaStudio: () -> Unit,
-    onReport: (String, Long) -> Unit,
+    onReport: (String, String) -> Unit,
     isUserTyping: Boolean = false,
     snackbarHostState: SnackbarHostState
 ) {
@@ -254,7 +254,7 @@ fun PrivateChatScreen(
                 verticalArrangement = Arrangement.spacedBy(8.dp)
             ) {
                 items(displayMessages, key = { it.id }) { msg ->
-                    val isMe = msg.senderId == 0L
+                    val isMe = msg.senderDisplayName == "من" || msg.senderId == "current_user" || msg.senderId == "0" || msg.senderId.isBlank()
                     MessageBubbleItem(
                         message = msg,
                         isMe = isMe,
@@ -271,10 +271,10 @@ fun PrivateChatScreen(
                         },
                         onDelete = { onDeleteMessage(msg.id) },
                         onTogglePin = { onPinMessage(msg.id, !msg.isPinned) },
-                        onReaction = { emoji -> onReaction(msg.id, emoji) },
+                        onReaction = { emoji -> onReaction(msg.serverId ?: msg.id.toString(), emoji) },
                         onOpenPromptBuilder = { p -> onOpenPromptBuilder(p) },
                         onOpenNavaStudio = onOpenNavaStudio,
-                        onReport = { onReport("MESSAGE", msg.id) }
+                        onReport = { onReport("MESSAGE", msg.serverId ?: msg.id.toString()) }
                     )
                 }
             }
@@ -445,7 +445,7 @@ fun PrivateChatScreen(
                             } else {
                                 onSendMessage(
                                     textToSend,
-                                    replyingToMessage?.id,
+                                    replyingToMessage?.serverId ?: replyingToMessage?.id?.toString(),
                                     replyingToMessage?.text?.take(40),
                                     replyingToMessage?.senderDisplayName
                                 )

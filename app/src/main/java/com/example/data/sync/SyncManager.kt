@@ -89,8 +89,9 @@ class SyncManager(
     private suspend fun handleRealtimeEvent(event: RealtimeEvent) = withContext(Dispatchers.IO) {
         when (event) {
             is RealtimeEvent.MessageCreated -> {
-                val convId = event.conversationId.toLongOrNull() ?: return@withContext
-                val senderId = event.senderId.toLongOrNull() ?: 0L
+                val convId = event.conversationId
+                if (convId.isBlank()) return@withContext
+                val senderId = event.senderId
 
                 // Deduplication check via clientRequestId or serverId
                 val existingByReqId = if (!event.clientRequestId.isNullOrBlank()) {
@@ -115,7 +116,7 @@ class SyncManager(
                         text = event.text,
                         messageType = event.messageType,
                         deliveryStatus = "DELIVERED",
-                        replyToMessageId = event.replyToId?.toLongOrNull(),
+                        replyToMessageId = event.replyToId,
                         aiActionPrompt = event.aiActionPrompt,
                         aiTargetModule = event.aiTargetModule,
                         createdAt = event.createdAt
@@ -123,7 +124,7 @@ class SyncManager(
                     db.messengerMessageDao().insertMessage(entity)
 
                     // Update conversation last message & unread count
-                    val currentUserId = sessionManager.getCurrentUserId()?.toLongOrNull() ?: 0L
+                    val currentUserId = sessionManager.getCurrentUserId().orEmpty()
                     val unreadDelta = if (senderId != currentUserId) 1 else 0
                     db.messengerConversationDao().updateLastMessage(
                         id = convId,
@@ -135,39 +136,33 @@ class SyncManager(
                 }
             }
             is RealtimeEvent.MessageUpdated -> {
-                val msgId = event.messageId.toLongOrNull() ?: return@withContext
-                db.messengerMessageDao().editMessageText(msgId, event.newText, event.editedAt)
+                db.messengerMessageDao().editMessageByServerId(event.messageId, event.newText, event.editedAt)
             }
             is RealtimeEvent.MessageDeleted -> {
-                val msgId = event.messageId.toLongOrNull() ?: return@withContext
-                db.messengerMessageDao().softDeleteMessage(msgId)
+                db.messengerMessageDao().softDeleteMessageByServerId(event.messageId)
             }
             is RealtimeEvent.MessageRead -> {
-                val convId = event.conversationId.toLongOrNull() ?: return@withContext
-                db.messengerConversationDao().markAsRead(convId)
+                if (event.conversationId.isNotBlank()) {
+                    db.messengerConversationDao().markAsRead(event.conversationId)
+                }
             }
             is RealtimeEvent.ReactionAdded -> {
-                val msgId = event.messageId.toLongOrNull() ?: return@withContext
-                val uId = event.userId.toLongOrNull() ?: 0L
                 db.reactionDao().insertReaction(
                     MessageReactionEntity(
-                        messageId = msgId,
-                        userId = uId,
+                        messageId = event.messageId,
+                        userId = event.userId,
                         reaction = event.reaction
                     )
                 )
             }
             is RealtimeEvent.ReactionRemoved -> {
-                val msgId = event.messageId.toLongOrNull() ?: return@withContext
-                val uId = event.userId.toLongOrNull() ?: 0L
-                db.reactionDao().deleteReaction(msgId, uId, event.reaction)
+                db.reactionDao().deleteReaction(event.messageId, event.userId, event.reaction)
             }
             is RealtimeEvent.ChannelPostPublished -> {
-                val chId = event.channelId.toLongOrNull() ?: return@withContext
                 val post = ChannelPostEntity(
-                    id = event.postId.toLongOrNull() ?: 0L,
-                    channelId = chId,
-                    authorId = 0L,
+                    id = event.postId,
+                    channelId = event.channelId,
+                    authorId = "",
                     authorName = event.authorName,
                     text = event.text,
                     mediaUrl = event.mediaUrl,
@@ -177,8 +172,9 @@ class SyncManager(
                 db.channelDao().insertPost(post)
             }
             is RealtimeEvent.UserPresence -> {
-                val uId = event.userId.toLongOrNull() ?: return@withContext
-                db.messengerUserDao().setUserOnlineStatus(uId, event.isOnline, event.lastSeen)
+                if (event.userId.isNotBlank()) {
+                    db.messengerUserDao().setUserOnlineStatus(event.userId, event.isOnline, event.lastSeen)
+                }
             }
             is RealtimeEvent.UserTyping -> {
                 // In-memory or volatile typing state can be observed by ViewModel
@@ -201,15 +197,14 @@ class SyncManager(
             if (response.isSuccessful && response.body()?.success == true) {
                 val conversations = response.body()?.data.orEmpty()
                 conversations.forEach { dto ->
-                    val convId = dto.id.toLongOrNull() ?: 0L
-                    if (convId > 0L) {
+                    if (dto.id.isNotBlank()) {
                         val entity = MessengerConversationEntity(
-                            id = convId,
+                            id = dto.id,
                             type = dto.type,
                             title = dto.title,
                             avatarUrl = dto.avatarUrl,
                             description = dto.description,
-                            directUserId = dto.directUserId?.toLongOrNull(),
+                            directUserId = dto.directUserId,
                             unreadCount = dto.unreadCount,
                             lastMessageText = dto.lastMessageText,
                             lastMessageSenderName = dto.lastMessageSenderName,
@@ -246,17 +241,17 @@ class SyncManager(
                 val clientReqId = msg.clientRequestId ?: java.util.UUID.randomUUID().toString()
                 val request = com.example.data.remote.model.SendMessageRequest(
                     clientRequestId = clientReqId,
-                    conversationId = msg.conversationId.toString(),
+                    conversationId = msg.conversationId,
                     text = msg.text,
                     messageType = msg.messageType,
-                    replyToMessageId = msg.replyToMessageId?.toString(),
+                    replyToMessageId = msg.replyToMessageId,
                     replyToText = msg.replyToText,
                     replyToSenderName = msg.replyToSenderName,
                     aiActionPrompt = msg.aiActionPrompt,
                     aiTargetModule = msg.aiTargetModule
                 )
                 try {
-                    val response = apiService.sendMessage(msg.conversationId.toString(), request)
+                    val response = apiService.sendMessage(msg.conversationId, request)
                     if (response.isSuccessful && response.body()?.success == true) {
                         val serverMsg = response.body()!!.data!!
                         db.messengerMessageDao().updateDeliveryStatusAndServerId(

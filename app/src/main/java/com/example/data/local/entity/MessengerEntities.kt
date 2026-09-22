@@ -3,13 +3,14 @@ package com.example.data.local.entity
 import androidx.room.Entity
 import androidx.room.Index
 import androidx.room.PrimaryKey
+import java.util.UUID
 
 @Entity(
     tableName = "users",
     indices = [Index(value = ["username"], unique = true)]
 )
 data class UserEntity(
-    @PrimaryKey(autoGenerate = true) val id: Long = 0,
+    @PrimaryKey val id: String = UUID.randomUUID().toString(),
     val username: String, // stored normalized without @ e.g. "ali", displayed as "@ali"
     val displayName: String,
     val avatarUrl: String = "",
@@ -31,12 +32,12 @@ data class UserEntity(
     ]
 )
 data class MessengerConversationEntity(
-    @PrimaryKey(autoGenerate = true) val id: Long = 0,
+    @PrimaryKey val id: String = UUID.randomUUID().toString(),
     val type: String = "PRIVATE", // "PRIVATE", "GROUP", "CHANNEL", "AI"
     val title: String,
     val avatarUrl: String = "",
     val description: String = "",
-    val directUserId: Long? = null, // for PRIVATE chat: references the other UserEntity.id
+    val directUserId: String? = null, // for PRIVATE chat: references the other UserEntity.id (String UUID)
     val isPinned: Boolean = false,
     val isMuted: Boolean = false,
     val isArchived: Boolean = false,
@@ -59,22 +60,22 @@ data class MessengerConversationEntity(
 )
 data class MessengerMessageEntity(
     @PrimaryKey(autoGenerate = true) val id: Long = 0,
-    val conversationId: Long,
-    val senderId: Long, // 0L = current logged-in user, -1L = Tarhi Noo AI, or user ID
+    val conversationId: String,
+    val senderId: String, // current user ID UUID, "tarhinoo_ai", or remote sender UUID
     val senderDisplayName: String = "",
     val text: String,
     val messageType: String = "TEXT", // "TEXT", "IMAGE", "VIDEO", "FILE", "AUDIO", "VOICE", "SYSTEM", "AI_RESULT"
     val deliveryStatus: String = "SENT", // "LOCAL_ONLY", "PENDING", "SENT", "DELIVERED", "READ", "FAILED"
     val serverId: String? = null,
     val clientRequestId: String? = null,
-    val replyToMessageId: Long? = null,
+    val replyToMessageId: String? = null,
     val replyToText: String? = null,
     val replyToSenderName: String? = null,
-    val forwardedFromMessageId: Long? = null,
+    val forwardedFromMessageId: String? = null,
     val forwardedFromSenderName: String? = null,
     val isPinned: Boolean = false,
     val isAiGenerated: Boolean = false,
-    val aiActionPrompt: String? = null, // if this message generated an AI prompt that can open in builder/studio
+    val aiActionPrompt: String? = null,
     val aiTargetModule: String? = null, // "PROMPT_BUILDER", "NAVA_STUDIO", null
     val readAt: Long? = null,
     val editedAt: Long? = null,
@@ -90,11 +91,11 @@ data class MessengerMessageEntity(
 )
 data class ConversationMemberEntity(
     @PrimaryKey(autoGenerate = true) val id: Long = 0,
-    val conversationId: Long,
-    val userId: Long,
+    val conversationId: String,
+    val userId: String,
     val role: String = "MEMBER", // "OWNER", "ADMIN", "MODERATOR", "MEMBER"
     val joinedAt: Long = System.currentTimeMillis(),
-    val lastReadMessageId: Long = 0L,
+    val lastReadMessageId: String = "",
     val notificationsEnabled: Boolean = true
 )
 
@@ -103,12 +104,12 @@ data class ConversationMemberEntity(
     indices = [Index(value = ["conversationId"])]
 )
 data class GroupEntity(
-    @PrimaryKey(autoGenerate = true) val id: Long = 0,
-    val conversationId: Long,
+    @PrimaryKey val id: String = UUID.randomUUID().toString(),
+    val conversationId: String,
     val name: String,
     val description: String = "",
     val avatarUrl: String = "",
-    val ownerId: Long = 0L,
+    val ownerId: String = "",
     val isPrivate: Boolean = false,
     val inviteCode: String = "",
     val memberCount: Int = 1,
@@ -120,8 +121,8 @@ data class GroupEntity(
     indices = [Index(value = ["groupId"], unique = true)]
 )
 data class GroupPermissionEntity(
-    @PrimaryKey(autoGenerate = true) val id: Long = 0,
-    val groupId: Long,
+    @PrimaryKey val id: String = UUID.randomUUID().toString(),
+    val groupId: String,
     val sendMessages: Boolean = true,
     val sendMedia: Boolean = true,
     val addMembers: Boolean = true,
@@ -141,14 +142,14 @@ data class GroupPermissionEntity(
     ]
 )
 data class ChannelEntity(
-    @PrimaryKey(autoGenerate = true) val id: Long = 0,
-    val conversationId: Long,
+    @PrimaryKey val id: String = UUID.randomUUID().toString(),
+    val conversationId: String,
     val name: String,
     val username: String, // e.g. "tarhineh_art", displayed as @tarhineh_art
     val description: String = "",
     val avatarUrl: String = "",
     val coverUrl: String = "",
-    val ownerId: Long = 0L,
+    val ownerId: String = "",
     val subscriberCount: Int = 1,
     val isPublic: Boolean = true,
     val inviteLink: String = "",
@@ -162,9 +163,9 @@ data class ChannelEntity(
     indices = [Index(value = ["channelId"])]
 )
 data class ChannelPostEntity(
-    @PrimaryKey(autoGenerate = true) val id: Long = 0,
-    val channelId: Long,
-    val authorId: Long,
+    @PrimaryKey val id: String = UUID.randomUUID().toString(),
+    val channelId: String,
+    val authorId: String,
     val authorName: String,
     val text: String,
     val mediaUrl: String = "",
@@ -185,8 +186,8 @@ data class ChannelPostEntity(
 )
 data class MessageReactionEntity(
     @PrimaryKey(autoGenerate = true) val id: Long = 0,
-    val messageId: Long,
-    val userId: Long, // 0L for current user
+    val messageId: String,
+    val userId: String,
     val reaction: String, // ❤️, 👍, 🔥, 😂, 😍, 😮, 😢, 👎
     val timestamp: Long = System.currentTimeMillis()
 )
@@ -197,7 +198,7 @@ data class MessageReactionEntity(
 )
 data class MessageAttachmentEntity(
     @PrimaryKey(autoGenerate = true) val id: Long = 0,
-    val messageId: Long,
+    val messageId: String,
     val type: String, // "IMAGE", "VIDEO", "AUDIO", "DOCUMENT", "AI_ASSET"
     val localUri: String = "",
     val remoteUrl: String = "",
@@ -214,7 +215,7 @@ data class MessageAttachmentEntity(
 )
 data class BlockedUserEntity(
     @PrimaryKey(autoGenerate = true) val id: Long = 0,
-    val userId: Long,
+    val userId: String,
     val blockedAt: Long = System.currentTimeMillis(),
     val reason: String = ""
 )
@@ -223,10 +224,10 @@ data class BlockedUserEntity(
 data class ReportEntity(
     @PrimaryKey(autoGenerate = true) val id: Long = 0,
     val targetType: String, // "USER", "MESSAGE", "GROUP", "CHANNEL"
-    val targetId: Long,
+    val targetId: String,
     val reasonCategory: String, // "SPAM", "HARASSMENT", "INAPPROPRIATE_CONTENT", "IMPERSONATION", "OTHER"
     val details: String = "",
-    val reportedByUserId: Long = 0L,
+    val reportedByUserId: String = "",
     val timestamp: Long = System.currentTimeMillis(),
     val status: String = "PENDING" // "PENDING", "REVIEWED", "DISMISSED", "RESOLVED"
 )

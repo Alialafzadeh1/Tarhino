@@ -77,7 +77,7 @@ fun NewConversationScreen(
     users: List<UserEntity>,
     onBack: () -> Unit,
     onStartPrivateChat: (UserEntity) -> Unit,
-    onCreateGroup: (name: String, desc: String, selectedUserIds: List<Long>) -> Unit,
+    onCreateGroup: (name: String, desc: String, selectedUserIds: List<String>) -> Unit,
     onCreateChannel: (name: String, username: String, desc: String) -> Unit,
     onStartAIChat: () -> Unit,
     snackbarHostState: SnackbarHostState
@@ -91,7 +91,7 @@ fun NewConversationScreen(
     // Group creation form state
     var groupName by remember { mutableStateOf("") }
     var groupDesc by remember { mutableStateOf("") }
-    var selectedGroupUsers by remember { mutableStateOf(setOf<Long>()) }
+    var selectedGroupUsers by remember { mutableStateOf(setOf<String>()) }
 
     // Channel creation form state
     var channelName by remember { mutableStateOf("") }

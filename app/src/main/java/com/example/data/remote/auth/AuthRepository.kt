@@ -52,7 +52,7 @@ class AuthRepository(
                 sessionManager.saveSession(data.user, data.accessToken, data.refreshToken, data.expiresIn)
                 // Cache user in Room
                 val userEntity = UserEntity(
-                    id = data.user.id.toLongOrNull() ?: 0L,
+                    id = data.user.id,
                     username = data.user.username,
                     displayName = data.user.displayName,
                     avatarUrl = data.user.avatarUrl,
@@ -166,7 +166,7 @@ class AuthRepository(
             if (meResponse.isSuccessful && meResponse.body()?.success == true) {
                 val me = meResponse.body()!!.data!!
                 val userEntity = UserEntity(
-                    id = me.id.toLongOrNull() ?: 0L,
+                    id = me.id,
                     username = me.username,
                     displayName = me.displayName,
                     avatarUrl = me.avatarUrl,

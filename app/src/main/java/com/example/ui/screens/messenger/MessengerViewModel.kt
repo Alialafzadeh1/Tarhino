@@ -15,10 +15,8 @@ import com.example.data.remote.realtime.RealtimeEvent
 import com.example.data.remote.realtime.RealtimeManager
 import com.example.data.sync.SyncManager
 import kotlinx.coroutines.flow.MutableStateFlow
-import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
-import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
 
 class MessengerViewModel(
@@ -31,47 +29,24 @@ class MessengerViewModel(
     private val _isUserTyping = MutableStateFlow(false)
     val isUserTyping: StateFlow<Boolean> = _isUserTyping.asStateFlow()
 
-    init {
-        viewModelScope.launch {
-            repository.seedInitialMessengerDataIfNeeded()
-        }
+    private val _conversations = MutableStateFlow<List<MessengerConversationEntity>>(emptyList())
+    val conversations: StateFlow<List<MessengerConversationEntity>> = _conversations.asStateFlow()
 
-        // Listen for realtime events if manager available
-        realtimeManager?.let { rm ->
-            viewModelScope.launch {
-                rm.events.collect { event ->
-                    when (event) {
-                        is RealtimeEvent.UserTyping -> {
-                            val currentId = _currentConversationId.value?.toString()
-                            if (currentId != null && event.conversationId == currentId) {
-                                _isUserTyping.value = event.isTyping
-                            }
-                        }
-                        else -> {}
-                    }
-                }
-            }
-        }
-    }
+    private val _groups = MutableStateFlow<List<GroupEntity>>(emptyList())
+    val groups: StateFlow<List<GroupEntity>> = _groups.asStateFlow()
 
-    val conversations: StateFlow<List<MessengerConversationEntity>> = repository.allConversations
-        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
+    private val _channels = MutableStateFlow<List<ChannelEntity>>(emptyList())
+    val channels: StateFlow<List<ChannelEntity>> = _channels.asStateFlow()
 
-    val groups: StateFlow<List<GroupEntity>> = repository.allGroups
-        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
+    private val _contacts = MutableStateFlow<List<UserEntity>>(emptyList())
+    val contacts: StateFlow<List<UserEntity>> = _contacts.asStateFlow()
 
-    val channels: StateFlow<List<ChannelEntity>> = repository.allChannels
-        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
-
-    val contacts: StateFlow<List<UserEntity>> = repository.contacts
-        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
-
-    val allUsers: StateFlow<List<UserEntity>> = repository.allActiveUsers
-        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
+    private val _allUsers = MutableStateFlow<List<UserEntity>>(emptyList())
+    val allUsers: StateFlow<List<UserEntity>> = _allUsers.asStateFlow()
 
     // Active conversation state
-    private val _currentConversationId = MutableStateFlow<Long?>(null)
-    val currentConversationId: StateFlow<Long?> = _currentConversationId.asStateFlow()
+    private val _currentConversationId = MutableStateFlow<String?>(null)
+    val currentConversationId: StateFlow<String?> = _currentConversationId.asStateFlow()
 
     private val _activeConversation = MutableStateFlow<MessengerConversationEntity?>(null)
     val activeConversation: StateFlow<MessengerConversationEntity?> = _activeConversation.asStateFlow()
@@ -90,48 +65,93 @@ class MessengerViewModel(
     private val _activeUserProfile = MutableStateFlow<UserEntity?>(null)
     val activeUserProfile: StateFlow<UserEntity?> = _activeUserProfile.asStateFlow()
 
-    fun selectConversation(conversationId: Long) {
-        _currentConversationId.value = conversationId
+    init {
         viewModelScope.launch {
-            repository.markAsRead(conversationId)
-            _activeConversation.value = repository.getConversationById(conversationId)
-            repository.getMessagesForConversation(conversationId).collect { msgList ->
-                _activeMessages.value = msgList
-            }
+            repository.seedInitialMessengerDataIfNeeded()
+            refreshAll()
         }
-    }
 
-    fun selectChannel(conversationId: Long) {
-        viewModelScope.launch {
-            val channel = repository.getChannelByConversationId(conversationId)
-            _activeChannel.value = channel
-            if (channel != null) {
-                repository.getPostsForChannel(channel.id).collect { pList ->
-                    _activeChannelPosts.value = pList
+        // Listen for realtime events if manager available
+        realtimeManager?.let { rm ->
+            viewModelScope.launch {
+                rm.events.collect { event ->
+                    when (event) {
+                        is RealtimeEvent.UserTyping -> {
+                            val currentId = _currentConversationId.value
+                            if (currentId != null && event.conversationId == currentId) {
+                                _isUserTyping.value = event.isTyping
+                            }
+                        }
+                        is RealtimeEvent.MessageCreated,
+                        is RealtimeEvent.MessageUpdated,
+                        is RealtimeEvent.MessageDeleted -> {
+                            refreshAll()
+                            _currentConversationId.value?.let { convId ->
+                                refreshMessages(convId)
+                            }
+                        }
+                        else -> {
+                            refreshAll()
+                        }
+                    }
                 }
             }
         }
     }
 
-    fun selectUserProfile(userId: Long) {
+    fun refreshAll() {
+        viewModelScope.launch {
+            _conversations.value = repository.getAllConversations()
+            _groups.value = repository.getAllGroups()
+            _channels.value = repository.getAllChannels()
+            _contacts.value = repository.getContacts()
+            _allUsers.value = repository.getAllActiveUsers()
+        }
+    }
+
+    private suspend fun refreshMessages(convId: String) {
+        _activeMessages.value = repository.getMessagesForConversation(convId)
+    }
+
+    fun selectConversation(conversationId: String) {
+        _currentConversationId.value = conversationId
+        viewModelScope.launch {
+            repository.markAsRead(conversationId)
+            _activeConversation.value = repository.getConversationById(conversationId)
+            refreshMessages(conversationId)
+            refreshAll()
+        }
+    }
+
+    fun selectChannel(conversationId: String) {
+        viewModelScope.launch {
+            val channel = repository.getChannelByConversationId(conversationId)
+            _activeChannel.value = channel
+            if (channel != null) {
+                _activeChannelPosts.value = repository.getPostsForChannel(channel.id)
+            }
+        }
+    }
+
+    fun selectUserProfile(userId: String) {
         viewModelScope.launch {
             _activeUserProfile.value = repository.getUserById(userId)
         }
     }
 
-    fun startPrivateChatWithUser(user: UserEntity, onReady: (Long) -> Unit) {
+    fun startPrivateChatWithUser(user: UserEntity, onReady: (String) -> Unit) {
         viewModelScope.launch {
             val convId = repository.getOrCreatePrivateConversation(user)
             selectConversation(convId)
+            refreshAll()
             onReady(convId)
         }
     }
 
-    fun startAIChatConversation(onReady: (Long) -> Unit) {
+    fun startAIChatConversation(onReady: (String) -> Unit) {
         viewModelScope.launch {
-            // Find existing AI conv or create
             val aiUser = repository.getUserByUsername("tarhinoo_ai") ?: UserEntity(
-                id = 1L,
+                id = "tarhinoo_ai",
                 username = "tarhinoo_ai",
                 displayName = "هوش مصنوعی طرحی نو",
                 bio = "«من هوش مصنوعی طرحی نو هستم؛ از رسانه هنری طرحینه مدیا.»",
@@ -141,29 +161,32 @@ class MessengerViewModel(
             )
             val convId = repository.getOrCreatePrivateConversation(aiUser)
             selectConversation(convId)
+            refreshAll()
             onReady(convId)
         }
     }
 
-    fun createGroup(name: String, desc: String, members: List<Long>, onCreated: (Long) -> Unit) {
+    fun createGroup(name: String, desc: String, members: List<String>, onCreated: (String) -> Unit) {
         viewModelScope.launch {
             val convId = repository.createGroupConversation(name, desc, members)
             selectConversation(convId)
+            refreshAll()
             onCreated(convId)
         }
     }
 
-    fun createChannel(name: String, username: String, desc: String, onCreated: (Long) -> Unit) {
+    fun createChannel(name: String, username: String, desc: String, onCreated: (String) -> Unit) {
         viewModelScope.launch {
             val convId = repository.createChannel(name, username, desc)
             selectChannel(convId)
+            refreshAll()
             onCreated(convId)
         }
     }
 
     fun sendMessage(
         text: String,
-        replyToId: Long? = null,
+        replyToId: String? = null,
         replyToText: String? = null,
         replyToSender: String? = null
     ) {
@@ -172,12 +195,14 @@ class MessengerViewModel(
             repository.sendMessage(
                 conversationId = convId,
                 text = text,
-                senderId = 0L,
+                senderId = "current_user",
                 senderDisplayName = "من",
                 replyToMessageId = replyToId,
                 replyToText = replyToText,
                 replyToSenderName = replyToSender
             )
+            refreshMessages(convId)
+            refreshAll()
 
             // AI Mention or AI Conversation: Real Creative AI Intelligence
             val conv = _activeConversation.value
@@ -196,91 +221,106 @@ class MessengerViewModel(
                 repository.sendMessage(
                     conversationId = convId,
                     text = realAiResponse,
-                    senderId = 1L,
+                    senderId = "tarhinoo_ai",
                     senderDisplayName = "هوش مصنوعی طرحی نو",
                     messageType = "AI_RESULT",
                     isAiGenerated = true,
                     aiActionPrompt = if (cleanPrompt.isNotBlank()) cleanPrompt else "Cinematic Iranian architecture at twilight with turquoise glowing tiles, volumetric lighting, 8k luxury",
                     aiTargetModule = targetModule
                 )
+                refreshMessages(convId)
+                refreshAll()
             }
         }
     }
 
-    fun forwardMessage(source: MessengerMessageEntity, targetConvId: Long) {
+    fun forwardMessage(source: MessengerMessageEntity, targetConvId: String) {
         viewModelScope.launch {
             repository.forwardMessage(source, targetConvId)
+            refreshAll()
         }
     }
 
     fun editMessage(messageId: Long, newText: String) {
         viewModelScope.launch {
             repository.editMessage(messageId, newText)
+            _currentConversationId.value?.let { refreshMessages(it) }
         }
     }
 
     fun deleteMessage(messageId: Long) {
         viewModelScope.launch {
             repository.deleteMessage(messageId)
+            _currentConversationId.value?.let { refreshMessages(it) }
         }
     }
 
     fun togglePinMessage(messageId: Long, isPinned: Boolean) {
         viewModelScope.launch {
             repository.setMessagePinned(messageId, isPinned)
+            _currentConversationId.value?.let { refreshMessages(it) }
         }
     }
 
-    fun toggleReaction(messageId: Long, emoji: String) {
+    fun toggleReaction(messageId: String, emoji: String) {
         viewModelScope.launch {
             repository.toggleReaction(messageId = messageId, reactionEmoji = emoji)
+            _currentConversationId.value?.let { refreshMessages(it) }
         }
     }
 
-    fun togglePinConversation(convId: Long, isPinned: Boolean) {
+    fun togglePinConversation(convId: String, isPinned: Boolean) {
         viewModelScope.launch {
             repository.setPinned(convId, isPinned)
+            refreshAll()
         }
     }
 
-    fun toggleMuteConversation(convId: Long, isMuted: Boolean) {
+    fun toggleMuteConversation(convId: String, isMuted: Boolean) {
         viewModelScope.launch {
             repository.setMuted(convId, isMuted)
+            refreshAll()
         }
     }
 
-    fun toggleArchiveConversation(convId: Long, isArchived: Boolean) {
+    fun toggleArchiveConversation(convId: String, isArchived: Boolean) {
         viewModelScope.launch {
             repository.setArchived(convId, isArchived)
+            refreshAll()
         }
     }
 
-    fun deleteConversation(convId: Long) {
+    fun deleteConversation(convId: String) {
         viewModelScope.launch {
             repository.deleteConversation(convId)
+            refreshAll()
         }
     }
 
-    fun markAsRead(convId: Long) {
+    fun markAsRead(convId: String) {
         viewModelScope.launch {
             repository.markAsRead(convId)
+            refreshAll()
         }
     }
 
-    fun toggleChannelSubscription(channelId: Long, isSubscribed: Boolean) {
+    fun toggleChannelSubscription(channelId: String, isSubscribed: Boolean) {
         viewModelScope.launch {
             repository.toggleChannelSubscription(channelId, isSubscribed)
             _activeChannel.value = _activeChannel.value?.copy(isSubscribed = isSubscribed)
+            refreshAll()
         }
     }
 
-    fun publishChannelPost(channelId: Long, text: String, promptText: String) {
+    fun publishChannelPost(channelId: String, text: String, promptText: String) {
         viewModelScope.launch {
             repository.publishChannelPost(channelId, text, promptText = promptText)
+            _activeChannelPosts.value = repository.getPostsForChannel(channelId)
+            refreshAll()
         }
     }
 
-    fun toggleBlockUser(userId: Long, isBlocked: Boolean) {
+    fun toggleBlockUser(userId: String, isBlocked: Boolean) {
         viewModelScope.launch {
             if (isBlocked) {
                 repository.blockUser(userId)
@@ -288,10 +328,11 @@ class MessengerViewModel(
                 repository.unblockUser(userId)
             }
             _activeUserProfile.value = _activeUserProfile.value?.copy(isBlocked = isBlocked)
+            refreshAll()
         }
     }
 
-    fun report(targetType: String, targetId: Long, reason: String) {
+    fun report(targetType: String, targetId: String, reason: String) {
         viewModelScope.launch {
             repository.report(targetType, targetId, reason)
         }

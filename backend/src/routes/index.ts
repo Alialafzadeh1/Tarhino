@@ -1,4 +1,5 @@
 import { Router, Request, Response } from 'express';
+import crypto from 'crypto';
 import bcrypt from 'bcryptjs';
 import jwt from 'jsonwebtoken';
 import { v4 as uuidv4 } from 'uuid';
@@ -99,6 +100,19 @@ router.post('/auth/register', authLimiter, async (req: Request, res: Response) =
       },
     });
 
+    // Create session record for newly registered user
+    const sessionTokenHash = crypto.createHash('sha256').update(accessToken).digest('hex');
+    await prisma.session.create({
+      data: {
+        userId: user.id,
+        tokenHash: sessionTokenHash,
+        userAgent: (req.headers['user-agent'] as string) || 'Android Client',
+        ipAddress: (req.headers['x-forwarded-for'] as string) || req.socket.remoteAddress || '127.0.0.1',
+        expiresAt: new Date(Date.now() + 30 * 24 * 60 * 60 * 1000),
+        lastActiveAt: new Date(),
+      },
+    });
+
     res.status(201).json({
       success: true,
       data: {
@@ -157,6 +171,19 @@ router.post('/auth/login', authLimiter, async (req: Request, res: Response) => {
       },
     });
 
+    // Create session record for authenticated user
+    const sessionTokenHash = crypto.createHash('sha256').update(accessToken).digest('hex');
+    await prisma.session.create({
+      data: {
+        userId: user.id,
+        tokenHash: sessionTokenHash,
+        userAgent: (req.headers['user-agent'] as string) || 'Android Client',
+        ipAddress: (req.headers['x-forwarded-for'] as string) || req.socket.remoteAddress || '127.0.0.1',
+        expiresAt: new Date(Date.now() + 30 * 24 * 60 * 60 * 1000),
+        lastActiveAt: new Date(),
+      },
+    });
+
     await prisma.user.update({
       where: { id: user.id },
       data: { isOnline: true, lastSeen: new Date() },
@@ -187,23 +214,37 @@ router.post('/auth/login', authLimiter, async (req: Request, res: Response) => {
 });
 
 /**
- * Strict JWT Refresh Token Rotation:
- * Verifies refresh token signature, checks if token was previously revoked,
- * invalidates old refresh token, creates a brand new rotated refresh token.
+ * Strict JWT Refresh Token Rotation (Phase 9.7 requirements):
+ * 1. Verify JWT signature & expiration.
+ * 2. Extract userId & verify user exists.
+ * 3. Search database for matching refresh token record (active & revoked).
+ * 4. Token Reuse Detection: If token matches a revoked record -> revoke all tokens & sessions family.
+ * 5. If no active matching record exists -> return 401 Unauthorized immediately.
+ * 6. Transaction-safe rotation: revoke old record, insert new refresh token, update session lastActiveAt.
  */
 router.post('/auth/refresh', async (req: Request, res: Response) => {
   try {
     const { refreshToken } = req.body;
-    if (!refreshToken) {
+    if (!refreshToken || typeof refreshToken !== 'string') {
       return res.status(400).json({
         success: false,
         error: { code: 'BAD_REQUEST', message: 'توکن بازیابی الزامی است' },
       });
     }
 
-    const payload = jwt.verify(refreshToken, env.JWT_REFRESH_SECRET) as { userId: string };
-    const user = await prisma.user.findUnique({ where: { id: payload.userId } });
+    // 1. Verify JWT signature
+    let payload: { userId: string };
+    try {
+      payload = jwt.verify(refreshToken, env.JWT_REFRESH_SECRET) as { userId: string };
+    } catch {
+      return res.status(401).json({
+        success: false,
+        error: { code: 'TOKEN_EXPIRED', message: 'توکن بازیابی منقضی شده یا نامعتبر است' },
+      });
+    }
 
+    // 2. Extract userId & verify user exists
+    const user = await prisma.user.findUnique({ where: { id: payload.userId } });
     if (!user) {
       return res.status(401).json({
         success: false,
@@ -211,13 +252,14 @@ router.post('/auth/refresh', async (req: Request, res: Response) => {
       });
     }
 
-    // Check stored refresh token record and revoke old tokens for rotation
+    // 3. Find matching refresh token record among user's stored tokens
     const storedTokens = await prisma.refreshToken.findMany({
-      where: { userId: user.id, revoked: false, expiresAt: { gt: new Date() } },
+      where: { userId: user.id },
+      orderBy: { createdAt: 'desc' },
+      take: 50,
     });
 
-    // Find the matching hashed token
-    let matchedTokenRecord: any = null;
+    let matchedTokenRecord: (typeof storedTokens)[0] | null = null;
     for (const record of storedTokens) {
       if (await bcrypt.compare(refreshToken, record.tokenHash)) {
         matchedTokenRecord = record;
@@ -225,24 +267,64 @@ router.post('/auth/refresh', async (req: Request, res: Response) => {
       }
     }
 
-    // Revoke old refresh token (Strict Single-Use Rotation)
-    if (matchedTokenRecord) {
-      await prisma.refreshToken.update({
-        where: { id: matchedTokenRecord.id },
-        data: { revoked: true },
+    // 4. Token Reuse Detection: If token was previously revoked
+    if (matchedTokenRecord && matchedTokenRecord.revoked) {
+      // Suspected token reuse! Revoke all refresh tokens and sessions for this user
+      await prisma.$transaction([
+        prisma.refreshToken.updateMany({
+          where: { userId: user.id },
+          data: { revoked: true },
+        }),
+        prisma.session.deleteMany({
+          where: { userId: user.id },
+        }),
+      ]);
+      return res.status(401).json({
+        success: false,
+        error: { code: 'TOKEN_REUSE_DETECTED', message: 'تشخیص استفاده مجدد از توکن نامعتبر. تمام نشست‌های فعال لغو شدند.' },
       });
     }
 
-    // Generate new rotated token pair
+    // 5. If no matching active record exists or token is expired
+    if (!matchedTokenRecord || matchedTokenRecord.expiresAt < new Date()) {
+      return res.status(401).json({
+        success: false,
+        error: { code: 'INVALID_REFRESH_TOKEN', message: 'توکن بازیابی در سرور ثبت نشده یا نامعتبر است' },
+      });
+    }
+
+    // 6. Transaction-safe rotation:
     const newAccessToken = jwt.sign({ userId: user.id }, env.JWT_SECRET, { expiresIn: '15m' });
     const newRefreshToken = jwt.sign({ userId: user.id }, env.JWT_REFRESH_SECRET, { expiresIn: '30d' });
+    const newRefreshTokenHash = await bcrypt.hash(newRefreshToken, 8);
 
-    await prisma.refreshToken.create({
-      data: {
-        userId: user.id,
-        tokenHash: await bcrypt.hash(newRefreshToken, 8),
-        expiresAt: new Date(Date.now() + 30 * 24 * 60 * 60 * 1000),
-      },
+    await prisma.$transaction(async (tx) => {
+      // Revoke the old refresh token record
+      await tx.refreshToken.update({
+        where: { id: matchedTokenRecord!.id },
+        data: { revoked: true },
+      });
+
+      // Create new rotated refresh token record
+      await tx.refreshToken.create({
+        data: {
+          userId: user.id,
+          tokenHash: newRefreshTokenHash,
+          expiresAt: new Date(Date.now() + 30 * 24 * 60 * 60 * 1000),
+        },
+      });
+
+      // Update session lastActiveAt
+      const latestSession = await tx.session.findFirst({
+        where: { userId: user.id },
+        orderBy: { lastActiveAt: 'desc' },
+      });
+      if (latestSession) {
+        await tx.session.update({
+          where: { id: latestSession.id },
+          data: { lastActiveAt: new Date() },
+        });
+      }
     });
 
     res.json({
@@ -261,27 +343,46 @@ router.post('/auth/refresh', async (req: Request, res: Response) => {
         expiresIn: 900,
       },
     });
-  } catch {
-    res.status(401).json({
+  } catch (error: any) {
+    res.status(500).json({
       success: false,
-      error: { code: 'TOKEN_EXPIRED', message: 'توکن بازیابی منقضی شده یا نامعتبر است' },
+      error: { code: 'SERVER_ERROR', message: error.message || 'خطا در تمدید توکن احراز هویت' },
     });
   }
 });
 
 router.post('/auth/logout', authenticateToken, async (req: AuthRequest, res: Response) => {
-  if (req.user?.id) {
-    await prisma.user.update({
-      where: { id: req.user.id },
-      data: { isOnline: false, lastSeen: new Date() },
-    });
-    // Revoke all active refresh tokens on logout
-    await prisma.refreshToken.updateMany({
-      where: { userId: req.user.id, revoked: false },
-      data: { revoked: true },
+  try {
+    const userId = req.user?.id;
+    if (userId) {
+      await prisma.user.update({
+        where: { id: userId },
+        data: { isOnline: false, lastSeen: new Date() },
+      }).catch(() => {});
+
+      // Revoke all active refresh tokens on logout
+      await prisma.refreshToken.updateMany({
+        where: { userId, revoked: false },
+        data: { revoked: true },
+      });
+
+      // Revoke all active sessions
+      await prisma.session.deleteMany({
+        where: { userId },
+      });
+
+      // Disconnect realtime WebSocket connection
+      if (realtimeServerInstance) {
+        realtimeServerInstance.disconnectUser(userId);
+      }
+    }
+    res.json({ success: true, message: 'خروج با موفقیت انجام شد' });
+  } catch (error: any) {
+    res.status(500).json({
+      success: false,
+      error: { code: 'SERVER_ERROR', message: error.message || 'خطای سرور در خروج' },
     });
   }
-  res.json({ success: true });
 });
 
 // ==========================================
